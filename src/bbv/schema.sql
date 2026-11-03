@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS transitions (
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Recon assets. Every row was scope-checked before being written: in_scope
+-- records the verdict (out-of-scope assets are kept, flagged, and never probed).
+CREATE TABLE IF NOT EXISTS assets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    program      TEXT NOT NULL,
+    kind         TEXT NOT NULL,          -- subdomain | host | endpoint | js | tech
+    value        TEXT NOT NULL,          -- the subdomain / url / endpoint / fingerprint
+    in_scope     INTEGER NOT NULL,       -- 1 or 0, scope verdict at persist time
+    source       TEXT NOT NULL,          -- subfinder | httpx | katana | seed | manual
+    metadata     TEXT,                   -- JSON: status_code, tech[], title, content_type...
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(program, kind, value)
+);
+
 CREATE INDEX IF NOT EXISTS idx_findings_state     ON findings(state);
 CREATE INDEX IF NOT EXISTS idx_evidence_finding   ON evidence(finding_id);
 CREATE INDEX IF NOT EXISTS idx_transitions_finding ON transitions(finding_id);
+CREATE INDEX IF NOT EXISTS idx_assets_program     ON assets(program, kind);
+CREATE INDEX IF NOT EXISTS idx_assets_scope       ON assets(program, in_scope);

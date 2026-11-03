@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     idor_session_a: dict[str, str] = Field(default_factory=dict)
     idor_session_b: dict[str, str] = Field(default_factory=dict)
 
+    # --- Recon (milestone 2) ---
+    # External tool binaries (wrapped via subprocess, not reimplemented).
+    # Paths are configurable so the PD 'httpx' tool is never confused with the
+    # Python httpx library's 'httpx' CLI of the same name.
+    subfinder_bin: str = "subfinder"
+    httpx_bin: str = "httpx"
+    katana_bin: str = "katana"
+    recon_timeout: int = 120          # per-tool subprocess timeout (seconds)
+    katana_max_depth: int = 2
+
+    candidates_dir: str = "candidates"
+
+    # --- Claude API (reasoning steps ONLY) ---
+    # Goes to api.anthropic.com — reasoning infrastructure, NOT a program target,
+    # so it is deliberately NOT routed through ScopedHttpClient. Never logged.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5"
+    anthropic_max_tokens: int = 2048
+
     @field_validator("idor_session_a", "idor_session_b", mode="before")
     @classmethod
     def _parse_json_dict(cls, v: Any) -> Any:

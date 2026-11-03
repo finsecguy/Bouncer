@@ -1,0 +1,28 @@
+{
+  "endpoints": [
+    {
+      "url": "/xss",
+      "method": "GET",
+      "params": ["q"],
+      "id_like_params": [],
+      "suspected_vuln_class": "reflected_xss",
+      "reasoning": "q is echoed into the search results page without visible encoding"
+    },
+    {
+      "url": "/item",
+      "method": "GET",
+      "params": ["id"],
+      "id_like_params": ["id"],
+      "suspected_vuln_class": "sqli_boolean",
+      "reasoning": "id is passed straight to an item lookup, likely a SQL WHERE clause"
+    },
+    {
+      "url": "/api/orders/1001",
+      "method": "GET",
+      "params": ["order_id"],
+      "id_like_params": ["order_id"],
+      "suspected_vuln_class": "idor",
+      "reasoning": "order_id is a sequential identifier on an authenticated endpoint"
+    }
+  ]
+}

@@ -113,6 +113,88 @@ def cmd_mockserver(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recon(args: argparse.Namespace) -> int:
+    from .recon import ReconRunner
+    settings = load_settings()
+    repo = _open_repo(settings)
+    scope = Scope.load(args.scope)
+
+    summary = ReconRunner(repo, scope, settings, args.program).run()
+
+    print(f"recon for program '{args.program}':")
+    print(f"  tools available: {summary.tools_available}")
+    print(f"  asset counts:    {summary.counts}")
+    for n in summary.notes:
+        print(f"  note: {n}")
+    total = len(repo.list_assets(args.program))
+    in_scope = len(repo.list_assets(args.program, in_scope=True))
+    print(f"  assets persisted: {total} ({in_scope} in scope)")
+    return 0
+
+
+def cmd_generate_candidates(args: argparse.Namespace) -> int:
+    from .candidates import CandidateGenerator, JsInput, write_candidates
+    from .claude_client import ClaudeExtractor, ReplayExtractor
+    from .http_client import ScopedHttpClient
+    from .pipeline import build_rate_limiter
+
+    settings = load_settings()
+    repo = _open_repo(settings)
+    scope = Scope.load(args.scope)
+
+    # Choose the extractor: real Claude, or a replayed saved response (offline).
+    if args.stub_response:
+        extractor = ReplayExtractor(
+            Path(args.stub_response).read_text(encoding="utf-8"),
+            source_label=args.stub_response,
+        )
+    else:
+        try:
+            extractor = ClaudeExtractor(settings)
+        except RuntimeError as e:
+            print(f"ERROR: {e}. Set BBV_ANTHROPIC_API_KEY, or pass --stub-response "
+                  "to replay a saved Claude response offline.", file=sys.stderr)
+            return 2
+
+    # Build the JS inputs: explicit files, or in-scope JS assets fetched through
+    # the scoped client (the ONLY target-traffic path here, and it is gated).
+    js_inputs: list[JsInput] = []
+    if args.js_file:
+        base = args.base_url or ""
+        for jf in args.js_file:
+            text = Path(jf).read_text(encoding="utf-8")
+            js_inputs.append(JsInput(source_url=jf, base_url=base, text=text))
+    else:
+        js_assets = repo.list_assets(args.program, kind=m.KIND_JS, in_scope=True)
+        if not js_assets:
+            print(f"no in-scope JS assets for '{args.program}'. Run recon first, "
+                  "or pass --js-file <path> --base-url <url>.", file=sys.stderr)
+            return 2
+        rl = build_rate_limiter(settings)
+        with ScopedHttpClient(scope, rl, timeout=settings.http_timeout,
+                              user_agent=settings.user_agent) as http:
+            for a in js_assets:
+                try:
+                    resp = http.get(a.value)
+                except Exception as e:
+                    print(f"  skip {a.value}: {e}", file=sys.stderr)
+                    continue
+                js_inputs.append(JsInput(source_url=a.value, base_url=a.value,
+                                         text=resp.text))
+
+    gen = CandidateGenerator(args.program, scope, extractor)
+    candidates = gen.generate(js_inputs)
+    paths = write_candidates(candidates, args.out or settings.candidates_dir)
+
+    print(f"generated {len(paths)} candidate(s) for '{args.program}':")
+    for p in paths:
+        print(f"  {p}")
+    print("\nThese are UNVALIDATED candidates. Review each one, then ingest the "
+          "ones you choose:\n  python -m bbv ingest <candidate.json> --scope "
+          f"{args.scope}\nNothing has been validated or submitted.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bbv", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -142,6 +224,25 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--host", default="127.0.0.1")
     pm.add_argument("--port", type=int, default=8000)
     pm.set_defaults(func=cmd_mockserver)
+
+    prc = sub.add_parser("recon", help="passive recon: populate the assets table")
+    prc.add_argument("program")
+    prc.add_argument("--scope", required=True, help="path to program scope JSON")
+    prc.set_defaults(func=cmd_recon)
+
+    pg = sub.add_parser("generate-candidates",
+                        help="reason over JS assets and write candidate finding JSON "
+                             "(does NOT ingest or validate)")
+    pg.add_argument("program")
+    pg.add_argument("--scope", required=True, help="path to program scope JSON")
+    pg.add_argument("--js-file", action="append",
+                    help="use a local JS file instead of fetching from assets (repeatable)")
+    pg.add_argument("--base-url", default=None,
+                    help="base URL to resolve root-relative endpoints from --js-file")
+    pg.add_argument("--stub-response", default=None,
+                    help="replay a saved Claude JSON response instead of calling the API")
+    pg.add_argument("--out", default=None, help="output dir (default: candidates/)")
+    pg.set_defaults(func=cmd_generate_candidates)
 
     return p
 

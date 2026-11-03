@@ -1,0 +1,10 @@
+{
+  "program": "demo",
+  "vuln_class": "sqli_boolean",
+  "target_url": "http://8.8.8.8/item?id=1",
+  "request": {
+    "method": "GET", "inject_param": "id", "base_value": "1",
+    "true_payload": "1 AND 1=1", "false_payload": "1 AND 1=2"
+  },
+  "notes": "regression: out-of-scope target must be refused before any request"
+}

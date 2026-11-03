@@ -9,3 +9,4 @@ data/
 *.db-shm
 *.egg-info/
 .pytest_cache/
+candidates/

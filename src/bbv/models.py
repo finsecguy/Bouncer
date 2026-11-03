@@ -35,6 +35,26 @@ class Finding:
 
 
 @dataclass
+class Asset:
+    program: str
+    kind: str           # subdomain | host | endpoint | js | tech
+    value: str
+    in_scope: bool
+    source: str         # subfinder | httpx | katana | seed | manual
+    metadata: dict[str, Any] = field(default_factory=dict)
+    id: int | None = None
+    created_at: str | None = None
+
+
+# Asset kinds / sources (string constants to avoid typos).
+KIND_SUBDOMAIN = "subdomain"
+KIND_HOST = "host"
+KIND_ENDPOINT = "endpoint"
+KIND_JS = "js"
+KIND_TECH = "tech"
+
+
+@dataclass
 class Evidence:
     finding_id: int
     kind: str

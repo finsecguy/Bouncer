@@ -57,6 +57,46 @@ class Repository:
             updated_at=row["updated_at"],
         )
 
+    # --- assets ---
+    def upsert_asset(self, a: m.Asset) -> int:
+        """Insert or update an asset. Idempotent on (program, kind, value) so
+        re-running recon does not duplicate rows."""
+        cur = self.conn.execute(
+            """INSERT INTO assets (program, kind, value, in_scope, source, metadata)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(program, kind, value) DO UPDATE SET
+                   in_scope = excluded.in_scope,
+                   source   = excluded.source,
+                   metadata = excluded.metadata
+               RETURNING id""",
+            (a.program, a.kind, a.value, 1 if a.in_scope else 0, a.source,
+             json.dumps(a.metadata)),
+        )
+        return int(cur.fetchone()["id"])
+
+    def list_assets(
+        self, program: str, kind: str | None = None, in_scope: bool | None = None
+    ) -> list[m.Asset]:
+        q = "SELECT * FROM assets WHERE program = ?"
+        params: list[Any] = [program]
+        if kind is not None:
+            q += " AND kind = ?"
+            params.append(kind)
+        if in_scope is not None:
+            q += " AND in_scope = ?"
+            params.append(1 if in_scope else 0)
+        q += " ORDER BY id"
+        rows = self.conn.execute(q, params).fetchall()
+        return [
+            m.Asset(
+                id=r["id"], program=r["program"], kind=r["kind"], value=r["value"],
+                in_scope=bool(r["in_scope"]), source=r["source"],
+                metadata=json.loads(r["metadata"]) if r["metadata"] else {},
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
     # --- evidence ---
     def add_evidence(self, ev: m.Evidence) -> int:
         cur = self.conn.execute(
