@@ -1,0 +1,8 @@
+{
+  "in_domains": ["example.com", "*.example.com"],
+  "in_cidrs": ["127.0.0.1/32"],
+  "out_domains": ["admin.example.com", "no.example.com"],
+  "out_cidrs": [],
+  "wildcard_matches_apex": false,
+  "allowed_schemes": ["http", "https"]
+}

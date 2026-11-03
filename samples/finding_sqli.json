@@ -1,0 +1,14 @@
+{
+  "program": "demo",
+  "vuln_class": "sqli_boolean",
+  "target_url": "http://127.0.0.1:8000/item?id=1",
+  "request": {
+    "method": "GET",
+    "inject_param": "id",
+    "base_value": "1",
+    "true_payload": "1 AND 1=1",
+    "false_payload": "1 AND 1=2",
+    "repeats": 3
+  },
+  "notes": "Boolean SQLi candidate against the local mock /item endpoint."
+}

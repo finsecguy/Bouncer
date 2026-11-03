@@ -1,1 +1,11 @@
-venv/\n__pycache__/\n*.pyc\n.env\n*.db\n*.db-wal\n*.db-shm
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+*.egg-info/
+.pytest_cache/

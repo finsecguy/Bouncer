@@ -1,0 +1,12 @@
+{
+  "program": "demo",
+  "vuln_class": "idor",
+  "target_url": "http://127.0.0.1:8000/api/orders/1001",
+  "request": {
+    "method": "GET",
+    "url_template": "http://127.0.0.1:8000/api/orders/{id}",
+    "object_id_a": "1001",
+    "object_id_b": "1002"
+  },
+  "notes": "IDOR candidate: account A (owns order 1001) reads account B's order 1002. Requires BBV_IDOR_SESSION_A/B in .env; for the mock server use {\"Cookie\": \"session=alice\"} and {\"Cookie\": \"session=bob\"}."
+}

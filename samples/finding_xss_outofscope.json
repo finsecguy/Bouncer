@@ -1,0 +1,10 @@
+{
+  "program": "demo",
+  "vuln_class": "reflected_xss",
+  "target_url": "http://not-in-scope.test:8000/xss?q=seed",
+  "request": {
+    "method": "GET",
+    "inject_param": "q"
+  },
+  "notes": "Deliberately out of scope per scope.example.json; the scope gate should refuse this before any request is made."
+}

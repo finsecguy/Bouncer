@@ -1,0 +1,10 @@
+{
+  "program": "demo",
+  "vuln_class": "reflected_xss",
+  "target_url": "http://127.0.0.1:8000/safe?q=seed",
+  "request": {
+    "method": "GET",
+    "inject_param": "q"
+  },
+  "notes": "Deliberately non-exploitable: endpoint HTML-escapes reflected input."
+}

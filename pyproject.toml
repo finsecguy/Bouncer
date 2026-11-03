@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bbv"
+version = "0.1.0"
+description = "Evidence-gated validation engine for authorized bug bounty findings"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx==0.28.1",
+    "pydantic==2.14.2",
+    "pydantic-settings==2.16.2",
+    "beautifulsoup4==4.15.0",
+    "playwright==1.64.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+]
+
+[project.scripts]
+bbv = "bbv.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bbv = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
