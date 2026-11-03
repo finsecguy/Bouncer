@@ -7,8 +7,10 @@ hard-stops at `in_review` — there is no auto-submission anywhere in this repo.
 
 The gate (milestone 1) is fed by a front end (milestone 2): passive recon to
 discover assets, then candidate generation that reasons over discovered JS with
-Claude and emits candidate finding JSON. No platform submission, no reporting
-(clean extension points are left for them).
+Claude and emits candidate finding JSON. Over the rejected pile sits an advisory
+learning layer (milestone 3): a deterministic false-positive signature catalog
+that makes recurring rejection causes visible for triage. No platform
+submission, no reporting (clean extension points are left for them).
 
 ## Install
 
@@ -76,6 +78,52 @@ python -m bbv ingest candidates/demo_001_reflected_xss.json --scope samples/scop
 > `ai-sourced:claude` in `notes` purely as signal). Deciding a candidate is real
 > is exactly the job of the milestone-1 gate — which is why generation never
 > auto-ingests. Review every candidate before `ingest`.
+
+## False-positive signatures (advisory triage layer)
+
+When a finding is rejected, bbv derives a **deterministic fingerprint** of *why*
+— from the same structured evidence the validator already wrote — and tracks how
+often that exact fingerprint recurs. This is purely to speed up triage over
+time; it is **not** noise prevention (nothing fuzzy reaches you in this
+architecture — every rejection already carries a concrete deterministic reason).
+
+```bash
+python -m bbv signatures list [--program demo] [--vuln-class sqli_boolean]
+python -m bbv signatures show <id>        # feature_key, example evidence,
+                                          # per-program breakdown, linked findings
+python -m bbv signatures backfill         # derive signatures from PAST rejections'
+                                          # stored evidence (deterministic, no re-run)
+```
+
+**This layer is advisory only. It never:** auto-rejects a candidate without
+running the real validator, skips or lowers the rigor of any validation step,
+changes a confidence threshold or the 0.80 boundary, or lets a finding bypass
+human review. All it does is *annotate* — "this matches a pattern seen N times,
+last reason X" — for your convenience. The full validator always still runs.
+*Why it's safe to have at all:* the validators are already deterministic, so
+there is no fuzzy noise to filter; the only job here is making repetition
+visible.
+
+- **Fingerprints** are per-vuln-class, built from existing evidence fields:
+  `xss|reflected|context=text|raw=false`, `idor|not_object_specific`,
+  `sqli|baseline_unstable`, etc. Same cause → same string, always. No LLM, no
+  embeddings.
+- **Scope**: patterns about general web behavior are `global` (e.g. XSS landing
+  in a text node); patterns about a specific endpoint are `program`-scoped
+  (e.g. "this program's `/support` ignores the SQLi payload"). Per-program
+  recurrence is tracked for *every* signature, so "this exact thing, on this
+  program, 4×" is always answerable.
+- **Atomic**: the signature upsert happens in the *same* transaction as the
+  rejection write. If it fails, the rejection rolls back too — no silent desync.
+- **Backfill vs. going-forward**: new rejections are caught by the rejection-path
+  hook automatically. `signatures backfill` additionally derives signatures from
+  rejections recorded *before* this layer existed, reading only stored evidence.
+- **Advisory pre-check** on `generate-candidates`: if a candidate targets an
+  endpoint this program has previously rejected (a program-scoped signature), a
+  `known_pattern_note` is added to its JSON. This is the only honest
+  pre-validation match — global/response-derived patterns (like XSS context)
+  are unknown until the real probe runs, so they are deliberately *not* guessed
+  at. The note never changes core fields, removes a candidate, or filters output.
 
 ## Lifecycle
 
@@ -146,9 +194,10 @@ src/bbv/
   validators/                               # one module per vuln_class, registered
   recon.py                                  # subprocess wrappers for subfinder/httpx/katana
   claude_client.py candidate_schema.py candidates.py   # JS reasoning -> candidate JSON
+  signatures.py                             # deterministic FP fingerprints (advisory)
   pipeline.py cli.py mockserver.py
 tests/      # scope, rate limiter, state machine, repo, validators, pipeline,
-            # recon, candidates, and regression fixtures
+            # recon, candidates, signatures, and regression fixtures
 samples/    # scope, one finding per validator, sample JS + replay Claude response
 ```
 
@@ -174,4 +223,5 @@ scope file that lists `127.0.0.1`.
 ## Not yet built (extension points)
 
 Platform submission and report generation. The validator registry, the `assets`
-table, and the candidate schema are where those plug in.
+table, the candidate schema, and the signature catalog (useful future input for
+calibration/RAG) are where those plug in.

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS transitions (
     confidence_before REAL NOT NULL,
     confidence_after  REAL NOT NULL,
     reason            TEXT NOT NULL,
+    matched_signature_id INTEGER REFERENCES false_positive_signatures(id),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
@@ -48,8 +49,46 @@ CREATE TABLE IF NOT EXISTS assets (
     UNIQUE(program, kind, value)
 );
 
+-- Milestone 3: false-positive signature catalog (ADVISORY / triage only).
+-- A signature is a deterministic fingerprint of WHY a finding was rejected,
+-- derived from the same structured evidence the validators already emit. It
+-- never gates or alters validation; it only makes repetition visible.
+CREATE TABLE IF NOT EXISTS false_positive_signatures (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    vuln_class       TEXT NOT NULL,
+    feature_key      TEXT NOT NULL,     -- canonical fingerprint string
+    scope            TEXT NOT NULL,     -- 'global' | 'program'
+    program          TEXT,              -- set when scope='program', else NULL
+    endpoint         TEXT,              -- normalized host+path for program-scoped, else NULL
+    example_evidence TEXT NOT NULL,     -- JSON: one representative evidence sample
+    last_reason      TEXT,              -- last rejection reason text (human context)
+    times_seen       INTEGER NOT NULL DEFAULT 0,
+    first_seen       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_seen        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Dedupe identity. COALESCE handles NULL program/endpoint so global rows (both
+-- NULL) collapse to one row rather than SQLite treating each NULL as distinct.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fps_identity ON false_positive_signatures(
+    vuln_class, feature_key, scope, COALESCE(program,''), COALESCE(endpoint,'')
+);
+
+-- Per-program recurrence for EVERY signature (including globally-scoped ones),
+-- so "this exact pattern, on this exact program, N times" is always answerable.
+CREATE TABLE IF NOT EXISTS signature_program_counts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    signature_id  INTEGER NOT NULL REFERENCES false_positive_signatures(id) ON DELETE CASCADE,
+    program       TEXT NOT NULL,
+    times_seen    INTEGER NOT NULL DEFAULT 0,
+    first_seen    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_seen     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(signature_id, program)
+);
+
 CREATE INDEX IF NOT EXISTS idx_findings_state     ON findings(state);
 CREATE INDEX IF NOT EXISTS idx_evidence_finding   ON evidence(finding_id);
 CREATE INDEX IF NOT EXISTS idx_transitions_finding ON transitions(finding_id);
+CREATE INDEX IF NOT EXISTS idx_transitions_sig    ON transitions(matched_signature_id);
 CREATE INDEX IF NOT EXISTS idx_assets_program     ON assets(program, kind);
 CREATE INDEX IF NOT EXISTS idx_assets_scope       ON assets(program, in_scope);
+CREATE INDEX IF NOT EXISTS idx_fps_lookup         ON false_positive_signatures(vuln_class, scope, program);

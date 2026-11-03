@@ -27,5 +27,22 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     """Create tables if they do not exist (idempotent)."""
+    _migrate(conn)
     ddl = resources.files("bbv").joinpath("schema.sql").read_text(encoding="utf-8")
     conn.executescript(ddl)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive migrations for databases created by earlier milestones. Must run
+    before the schema script, whose indexes reference newly-added columns."""
+    tables = {
+        r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "transitions" in tables:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(transitions)").fetchall()}
+        if "matched_signature_id" not in cols:
+            # Plain INTEGER (no inline FK: SQLite cannot add FK constraints via
+            # ALTER). Fresh databases get the REFERENCES form from schema.sql.
+            conn.execute("ALTER TABLE transitions ADD COLUMN matched_signature_id INTEGER")

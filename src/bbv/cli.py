@@ -113,6 +113,55 @@ def cmd_mockserver(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_signatures(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    repo = _open_repo(settings)
+
+    if args.sig_cmd == "backfill":
+        n = repo.backfill_signatures()
+        print(f"backfilled {n} past rejection(s) into the signature catalog")
+        return 0
+
+    if args.sig_cmd == "show":
+        s = repo.get_signature(args.id)
+        if s is None:
+            print(f"no signature #{args.id}", file=sys.stderr)
+            return 2
+        print(f"Signature #{s['id']}  [{s['vuln_class']}]  scope={s['scope']}")
+        print(f"  feature_key: {s['feature_key']}")
+        if s["program"]:
+            print(f"  program:     {s['program']}")
+        if s["endpoint"]:
+            print(f"  endpoint:    {s['endpoint']}")
+        print(f"  times_seen:  {s['times_seen']}  (first {s['first_seen']}, last {s['last_seen']})")
+        print(f"  last_reason: {s['last_reason']}")
+        print(f"  example_evidence: {json.dumps(s['example_evidence'])}")
+        print("  per-program breakdown:")
+        for pb in s["program_breakdown"]:
+            print(f"    {pb['program']:<20} {pb['times_seen']}x  (last {pb['last_seen']})")
+        print(f"  linked rejected findings: {s['linked_finding_ids']}")
+        return 0
+
+    # list
+    rows = repo.list_signatures(program=args.program, vuln_class=args.vuln_class)
+    if not rows:
+        print("no signatures recorded yet "
+              "(reject some findings, or run: bbv signatures backfill)")
+        return 0
+    hdr = f"{'ID':<4} {'SEEN':<5} {'SCOPE':<8} {'VULN_CLASS':<15} FEATURE_KEY"
+    if args.program:
+        hdr = f"{'ID':<4} {'SEEN':<5} {'HERE':<5} {'SCOPE':<8} {'VULN_CLASS':<15} FEATURE_KEY"
+    print(hdr)
+    for r in rows:
+        if args.program:
+            print(f"{r['id']:<4} {r['times_seen']:<5} {r['program_times_seen']:<5} "
+                  f"{r['scope']:<8} {r['vuln_class']:<15} {r['feature_key']}")
+        else:
+            print(f"{r['id']:<4} {r['times_seen']:<5} {r['scope']:<8} "
+                  f"{r['vuln_class']:<15} {r['feature_key']}")
+    return 0
+
+
 def cmd_recon(args: argparse.Namespace) -> int:
     from .recon import ReconRunner
     settings = load_settings()
@@ -184,7 +233,15 @@ def cmd_generate_candidates(args: argparse.Namespace) -> int:
 
     gen = CandidateGenerator(args.program, scope, extractor)
     candidates = gen.generate(js_inputs)
+    # Advisory annotation only — never filters or alters core fields.
+    from .candidates import annotate_known_patterns
+    annotate_known_patterns(candidates, repo)
     paths = write_candidates(candidates, args.out or settings.candidates_dir)
+
+    noted = sum(1 for c in candidates if "known_pattern_note" in c)
+    if noted:
+        print(f"({noted} candidate(s) carry an advisory known_pattern_note — "
+              "still unvalidated; the validator runs on ingest)")
 
     print(f"generated {len(paths)} candidate(s) for '{args.program}':")
     for p in paths:
@@ -243,6 +300,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="replay a saved Claude JSON response instead of calling the API")
     pg.add_argument("--out", default=None, help="output dir (default: candidates/)")
     pg.set_defaults(func=cmd_generate_candidates)
+
+    psig = sub.add_parser("signatures",
+                          help="browse the advisory false-positive signature catalog")
+    sig_sub = psig.add_subparsers(dest="sig_cmd", required=True)
+    sl = sig_sub.add_parser("list", help="signatures by recurrence (most-seen first)")
+    sl.add_argument("--program", default=None)
+    sl.add_argument("--vuln-class", default=None, dest="vuln_class")
+    sl.set_defaults(func=cmd_signatures)
+    ss = sig_sub.add_parser("show", help="full detail for one signature")
+    ss.add_argument("id", type=int)
+    ss.set_defaults(func=cmd_signatures)
+    sb = sig_sub.add_parser("backfill",
+                            help="derive signatures from past rejections' stored evidence")
+    sb.set_defaults(func=cmd_signatures)
 
     return p
 

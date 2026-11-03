@@ -149,6 +149,34 @@ class CandidateGenerator:
         return None
 
 
+def annotate_known_patterns(candidates: list[dict], repo) -> list[dict]:
+    """ADVISORY pre-check: for each candidate, if THIS program has previously
+    rejected THIS endpoint for THIS vuln_class with a program-scoped signature,
+    attach a `known_pattern_note` for the human skimming candidates/ before
+    choosing what to ingest.
+
+    This is the ONLY honest pre-validation match: the fingerprints for global
+    patterns (e.g. XSS context=text) and most causes are derived from response
+    evidence that does not exist until the real validator runs, so they cannot
+    be pre-checked and are deliberately NOT guessed at here. The note never
+    changes a candidate's core fields, never removes it, never auto-filters.
+    """
+    from . import signatures as sig
+
+    for cand in candidates:
+        endpoint = sig.normalize_endpoint(cand["target_url"])
+        matches = repo.precheck_signatures(cand["program"], cand["vuln_class"], endpoint)
+        if matches:
+            top = matches[0]
+            cand["known_pattern_note"] = (
+                f"ADVISORY (not validated): this program has rejected {endpoint} "
+                f"as '{top['feature_key']}' {top['times_seen']}x "
+                f"(last reason: {top.get('last_reason') or 'n/a'}). "
+                "The full validator will still run on ingest."
+            )
+    return candidates
+
+
 def write_candidates(candidates: list[dict], out_dir: str | Path) -> list[Path]:
     """Write each candidate to its own JSON file. Returns the paths written."""
     out = Path(out_dir)
