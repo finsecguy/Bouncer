@@ -1,0 +1,1 @@
+venv/\n__pycache__/\n*.pyc\n.env\n*.db\n*.db-wal\n*.db-shm
