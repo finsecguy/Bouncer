@@ -45,12 +45,21 @@ class Settings(BaseSettings):
     candidates_dir: str = "candidates"
     reports_dir: str = "reports"
 
-    # --- Claude API (reasoning steps ONLY) ---
-    # Goes to api.anthropic.com — reasoning infrastructure, NOT a program target,
-    # so it is deliberately NOT routed through ScopedHttpClient. Never logged.
+    # --- LLM provider for candidate-generation reasoning (reasoning steps ONLY) ---
+    # The chosen endpoint is reasoning infrastructure, NOT a program target, so it
+    # is deliberately NOT routed through ScopedHttpClient. Keys are never logged.
+    # provider: anthropic | openai | self_hosted (self_hosted is OpenAI-compatible,
+    # e.g. Ollama/vLLM/LM Studio, selected via a non-default openai_base_url).
+    llm_provider: str = "anthropic"
+
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
     anthropic_max_tokens: int = 2048
+
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4.1-mini"
+    openai_base_url: str = ""          # blank => OpenAI's real endpoint; required for self_hosted
+    openai_max_tokens: int = 2048
 
     @field_validator("idor_session_a", "idor_session_b", mode="before")
     @classmethod

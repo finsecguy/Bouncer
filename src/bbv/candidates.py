@@ -24,7 +24,9 @@ from .scope import Scope
 
 log = logging.getLogger("bbv.candidates")
 
-AI_SOURCE_TAG = "ai-sourced:claude"
+# Provenance prefix. The full tag records the provider/model that produced a
+# candidate, e.g. "ai-sourced:openai:gpt-4.1-mini" or "ai-sourced:replay".
+AI_SOURCE_TAG = "ai-sourced"
 
 
 @dataclass
@@ -57,6 +59,9 @@ class CandidateGenerator:
         self.program = program
         self.scope = scope
         self.extractor = extractor
+        # Provenance tag for notes, from the extractor (provider:model), falling
+        # back to the bare prefix if the extractor does not declare one.
+        self.source_tag = getattr(extractor, "source_tag", AI_SOURCE_TAG)
 
     def generate(self, js_inputs: list[JsInput]) -> list[dict]:
         """Return candidate finding dicts (also the thing written to disk)."""
@@ -86,7 +91,7 @@ class CandidateGenerator:
         self, ep: ExtractedEndpoint, abs_url: str, source_js: str
     ) -> dict | None:
         vc = ep.suspected_vuln_class
-        note = (f"{AI_SOURCE_TAG}; from JS {source_js}; "
+        note = (f"{self.source_tag}; from JS {source_js}; "
                 f"reasoning: {ep.reasoning or 'n/a'}")
 
         if vc == "reflected_xss":

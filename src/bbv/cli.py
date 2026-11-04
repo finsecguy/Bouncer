@@ -20,6 +20,44 @@ def _open_repo(settings) -> Repository:
     return Repository(conn)
 
 
+def _resolve_scope(explicit: str | None, program: str) -> tuple[str, Scope] | None:
+    """Pick the scope file and ALWAYS announce it loudly. Explicit --scope wins;
+    otherwise fall back to scopes/<program>.json. Never silently guess: if
+    neither exists, print a clear error and return None (caller exits 2)."""
+    path = explicit or str(Path("scopes") / f"{program}.json")
+    if not Path(path).exists():
+        if explicit:
+            print(f"ERROR: scope file {path!r} does not exist.", file=sys.stderr)
+        else:
+            print(f"ERROR: no --scope given and default scopes/{program}.json not "
+                  "found. Pass --scope <file>.", file=sys.stderr)
+        return None
+    print(f"SCOPE: {path}")
+    return path, Scope.load(path)
+
+
+def _ingest_finding_data(repo: Repository, scope: Scope, settings, data: dict) -> int | None:
+    """Shared ingest core used by both `ingest` and `ingest-batch`, so batch
+    behaves identically to a sequence of single ingests. Returns the new finding
+    id, or None if the target was out of scope (refusal already printed)."""
+    finding = m.Finding(
+        program=data["program"],
+        target_url=data["target_url"],
+        vuln_class=data["vuln_class"],
+        request=data.get("request", {}),
+        notes=data.get("notes"),
+        confidence=float(data.get("confidence", m.SEED_CONFIDENCE)),
+    )
+    if not scope.is_allowed(finding.target_url):
+        print(f"REFUSED: target {finding.target_url} is not in the provided scope.",
+              file=sys.stderr)
+        return None
+    finding_id = repo.create_finding(finding)
+    print(f"ingested finding #{finding_id} ({finding.vuln_class}); validating...")
+    validate_finding(repo, repo.get_finding(finding_id), scope, settings)
+    return finding_id
+
+
 def _print_trail(repo: Repository, finding_id: int) -> None:
     f = repo.get_finding(finding_id)
     assert f is not None
@@ -41,30 +79,16 @@ def _print_trail(repo: Repository, finding_id: int) -> None:
 def cmd_ingest(args: argparse.Namespace) -> int:
     settings = load_settings()
     repo = _open_repo(settings)
-    scope = Scope.load(args.scope)
 
     data = json.loads(Path(args.finding).read_text(encoding="utf-8"))
-    finding = m.Finding(
-        program=data["program"],
-        target_url=data["target_url"],
-        vuln_class=data["vuln_class"],
-        request=data.get("request", {}),
-        notes=data.get("notes"),
-        confidence=float(data.get("confidence", m.SEED_CONFIDENCE)),
-    )
-    # Guard: the finding's target must itself be in scope before we create it.
-    if not scope.is_allowed(finding.target_url):
-        print(f"REFUSED: target {finding.target_url} is not in the provided scope.",
-              file=sys.stderr)
+    resolved = _resolve_scope(args.scope, data["program"])
+    if resolved is None:
         return 2
+    _, scope = resolved
 
-    finding_id = repo.create_finding(finding)
-    print(f"ingested finding #{finding_id} ({finding.vuln_class}); validating...")
-
-    created = repo.get_finding(finding_id)
-    assert created is not None
-    validate_finding(repo, created, scope, settings)
-
+    finding_id = _ingest_finding_data(repo, scope, settings, data)
+    if finding_id is None:
+        return 2
     _print_trail(repo, finding_id)
     return 0
 
@@ -206,63 +230,69 @@ def cmd_signatures(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_recon(args: argparse.Namespace) -> int:
+def _run_recon(settings, repo, scope, program):
     from .recon import ReconRunner
+    return ReconRunner(repo, scope, settings, program).run()
+
+
+def _print_recon_summary(summary, repo, program, indent="  ") -> None:
+    print(f"{indent}tools available: {summary.tools_available}")
+    print(f"{indent}asset counts:    {summary.counts}")
+    for n in summary.notes:
+        print(f"{indent}note: {n}")
+    total = len(repo.list_assets(program))
+    in_scope = len(repo.list_assets(program, in_scope=True))
+    print(f"{indent}assets persisted: {total}  ({in_scope} in scope, "
+          f"{total - in_scope} out of scope)")
+
+
+def cmd_recon(args: argparse.Namespace) -> int:
     settings = load_settings()
     repo = _open_repo(settings)
-    scope = Scope.load(args.scope)
+    resolved = _resolve_scope(args.scope, args.program)
+    if resolved is None:
+        return 2
+    _, scope = resolved
 
-    summary = ReconRunner(repo, scope, settings, args.program).run()
-
+    summary = _run_recon(settings, repo, scope, args.program)
     print(f"recon for program '{args.program}':")
-    print(f"  tools available: {summary.tools_available}")
-    print(f"  asset counts:    {summary.counts}")
-    for n in summary.notes:
-        print(f"  note: {n}")
-    total = len(repo.list_assets(args.program))
-    in_scope = len(repo.list_assets(args.program, in_scope=True))
-    print(f"  assets persisted: {total} ({in_scope} in scope)")
+    _print_recon_summary(summary, repo, args.program)
     return 0
 
 
-def cmd_generate_candidates(args: argparse.Namespace) -> int:
-    from .candidates import CandidateGenerator, JsInput, write_candidates
-    from .claude_client import ClaudeExtractor, ReplayExtractor
+def _run_generate(settings, repo, scope, program, *, js_file, base_url,
+                  stub_response, out) -> tuple[list, list] | None:
+    """Shared generate-candidates core. Returns (paths, candidates), or None if
+    it could not proceed (message already printed). Writes files; never ingests."""
+    from .candidates import (CandidateGenerator, JsInput, annotate_known_patterns,
+                             write_candidates)
+    from .claude_client import ReplayExtractor, make_extractor
     from .http_client import ScopedHttpClient
     from .pipeline import build_rate_limiter
 
-    settings = load_settings()
-    repo = _open_repo(settings)
-    scope = Scope.load(args.scope)
-
-    # Choose the extractor: real Claude, or a replayed saved response (offline).
-    if args.stub_response:
+    if stub_response:
+        # Provider-agnostic: replay bypasses the API entirely.
         extractor = ReplayExtractor(
-            Path(args.stub_response).read_text(encoding="utf-8"),
-            source_label=args.stub_response,
-        )
+            Path(stub_response).read_text(encoding="utf-8"), source_label=stub_response)
     else:
         try:
-            extractor = ClaudeExtractor(settings)
+            extractor = make_extractor(settings)   # picks provider from BBV_LLM_PROVIDER
         except RuntimeError as e:
-            print(f"ERROR: {e}. Set BBV_ANTHROPIC_API_KEY, or pass --stub-response "
-                  "to replay a saved Claude response offline.", file=sys.stderr)
-            return 2
+            print(f"ERROR: {e}. Fix provider config (see `bbv setup`), or pass "
+                  "--stub-response to replay a saved response offline.", file=sys.stderr)
+            return None
 
-    # Build the JS inputs: explicit files, or in-scope JS assets fetched through
-    # the scoped client (the ONLY target-traffic path here, and it is gated).
     js_inputs: list[JsInput] = []
-    if args.js_file:
-        base = args.base_url or ""
-        for jf in args.js_file:
-            text = Path(jf).read_text(encoding="utf-8")
-            js_inputs.append(JsInput(source_url=jf, base_url=base, text=text))
+    if js_file:
+        for jf in js_file:
+            js_inputs.append(JsInput(source_url=jf, base_url=base_url or "",
+                                     text=Path(jf).read_text(encoding="utf-8")))
     else:
-        js_assets = repo.list_assets(args.program, kind=m.KIND_JS, in_scope=True)
+        js_assets = repo.list_assets(program, kind=m.KIND_JS, in_scope=True)
         if not js_assets:
-            print(f"no in-scope JS assets for '{args.program}'. Run recon first, "
-                  "or pass --js-file <path> --base-url <url>.", file=sys.stderr)
-            return 2
+            print(f"no in-scope JS assets for '{program}'. Run recon first, or pass "
+                  "--js-file <path> --base-url <url>.", file=sys.stderr)
+            return None
         rl = build_rate_limiter(settings)
         with ScopedHttpClient(scope, rl, timeout=settings.http_timeout,
                               user_agent=settings.user_agent) as http:
@@ -275,24 +305,207 @@ def cmd_generate_candidates(args: argparse.Namespace) -> int:
                 js_inputs.append(JsInput(source_url=a.value, base_url=a.value,
                                          text=resp.text))
 
-    gen = CandidateGenerator(args.program, scope, extractor)
-    candidates = gen.generate(js_inputs)
-    # Advisory annotation only — never filters or alters core fields.
-    from .candidates import annotate_known_patterns
-    annotate_known_patterns(candidates, repo)
-    paths = write_candidates(candidates, args.out or settings.candidates_dir)
+    try:
+        candidates = CandidateGenerator(program, scope, extractor).generate(js_inputs)
+    except Exception as e:
+        # A live provider call failed (auth, network, bad endpoint). Fail cleanly
+        # for the right reason rather than crashing; malformed-but-parsed output
+        # is handled upstream (discarded), so this is a transport/provider fault.
+        print(f"ERROR: LLM provider call failed ({type(e).__name__}: {e}). "
+              "Check `bbv setup`, or use --stub-response to work offline.",
+              file=sys.stderr)
+        return None
+    annotate_known_patterns(candidates, repo)   # advisory only; never filters
+    paths = write_candidates(candidates, out or settings.candidates_dir)
+    return paths, candidates
 
-    noted = sum(1 for c in candidates if "known_pattern_note" in c)
-    if noted:
-        print(f"({noted} candidate(s) carry an advisory known_pattern_note — "
-              "still unvalidated; the validator runs on ingest)")
 
-    print(f"generated {len(paths)} candidate(s) for '{args.program}':")
+def _print_candidate_results(paths, candidates, indent="  ") -> None:
+    noted = [c for c in candidates if "known_pattern_note" in c]
+    print(f"{indent}generated {len(paths)} candidate(s):")
+    noted_names = {str(p) for c, p in zip(candidates, paths) if "known_pattern_note" in c}
     for p in paths:
-        print(f"  {p}")
+        tag = "   [!] known_pattern_note" if str(p) in noted_names else ""
+        print(f"{indent}  {p}{tag}")
+    if noted:
+        print(f"{indent}[!] {len(noted)} candidate(s) match a repeat false-positive "
+              "pattern (read those first):")
+        for c, p in zip(candidates, paths):
+            if "known_pattern_note" in c:
+                print(f"{indent}    - {Path(p).name}: {c['known_pattern_note']}")
+
+
+def cmd_generate_candidates(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    repo = _open_repo(settings)
+    resolved = _resolve_scope(args.scope, args.program)
+    if resolved is None:
+        return 2
+    scope_path, scope = resolved
+
+    result = _run_generate(settings, repo, scope, args.program,
+                           js_file=args.js_file, base_url=args.base_url,
+                           stub_response=args.stub_response, out=args.out)
+    if result is None:
+        return 2
+    paths, candidates = result
+    _print_candidate_results(paths, candidates)
     print("\nThese are UNVALIDATED candidates. Review each one, then ingest the "
-          "ones you choose:\n  python -m bbv ingest <candidate.json> --scope "
-          f"{args.scope}\nNothing has been validated or submitted.")
+          f"ones you choose:\n  python -m bbv ingest <candidate.json> --scope "
+          f"{scope_path}\nNothing has been validated or submitted.")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Chain recon -> generate-candidates and STOP. No ingest, review, or report."""
+    settings = load_settings()
+    repo = _open_repo(settings)
+    resolved = _resolve_scope(args.scope, args.program)
+    if resolved is None:
+        return 2
+    scope_path, scope = resolved
+
+    print(f"\n== bbv run: {args.program} ==")
+
+    print("\n-- Stage 1/2: recon --")
+    summary = _run_recon(settings, repo, scope, args.program)
+    _print_recon_summary(summary, repo, args.program)
+
+    print("\n-- Stage 2/2: generate-candidates --")
+    result = _run_generate(settings, repo, scope, args.program,
+                           js_file=args.js_file, base_url=args.base_url,
+                           stub_response=args.stub_response, out=args.out)
+    if result is None:
+        print("\n(recon completed; no candidates were generated. Nothing was "
+              "ingested, validated, or submitted.)")
+        return 2
+    paths, candidates = result
+    _print_candidate_results(paths, candidates)
+
+    out_dir = args.out or settings.candidates_dir
+    print("\n== Done. Nothing was ingested, validated, or submitted. ==")
+    print(f"Next: review the {len(paths)} file(s) in {out_dir}/, then ingest the "
+          "ones worth testing:")
+    print(f"  python -m bbv ingest-batch {args.program}")
+    print(f"  python -m bbv ingest {out_dir}/<file>.json --scope {scope_path}")
+    return 0
+
+
+def cmd_ingest_batch(args: argparse.Namespace) -> int:
+    """Ingest every candidate JSON in a directory, sequentially. Full per-finding
+    output is printed for each (never abbreviated), plus a summary table."""
+    settings = load_settings()
+    repo = _open_repo(settings)
+
+    directory = Path(args.dir or settings.candidates_dir)
+    files = sorted(directory.glob("*.json"))
+    if not files:
+        print(f"no candidate JSON files in {directory}/", file=sys.stderr)
+        return 2
+
+    rows: list[tuple] = []
+    for path in files:
+        print(f"\n{'='*70}\n# {path}\n{'='*70}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"  skip {path}: not valid JSON ({e})", file=sys.stderr)
+            rows.append((path.name, "-", "-", "SKIPPED (bad JSON)", "-"))
+            continue
+
+        resolved = _resolve_scope(args.scope, data.get("program", args.program))
+        if resolved is None:
+            rows.append((path.name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "SKIPPED (no scope)", "-"))
+            continue
+        _, scope = resolved
+
+        fid = _ingest_finding_data(repo, scope, settings, data)
+        if fid is None:
+            rows.append((path.name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "REFUSED (out of scope)", "-"))
+            continue
+        _print_trail(repo, fid)   # identical full output to single `ingest`
+        f = repo.get_finding(fid)
+        rows.append((f"#{fid}", f.vuln_class, f.target_url, f.state,
+                     f"{f.confidence:.2f}"))
+
+    # Summary table IN ADDITION to the full output above, never instead of it.
+    print(f"\n{'='*70}\n# Batch summary ({len(files)} file(s))\n{'='*70}")
+    print(f"{'id/file':<28} {'vuln_class':<15} {'state':<22} {'conf':<5} target")
+    for name, vc, target, state, conf in rows:
+        ident = name if str(name).startswith("#") else name
+        print(f"{ident:<28} {vc:<15} {state:<22} {conf:<5} {target}")
+    return 0
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    """Read-only: show everything across all programs that is waiting on you."""
+    settings = load_settings()
+    repo = _open_repo(settings)
+
+    print("== bbv queue: what needs you ==  (read-only; nothing is changed)")
+
+    # [1] findings in review.
+    in_review = repo.list_findings(m.IN_REVIEW)
+    print(f"\n[1] Findings in review (awaiting approve/dismiss):  {len(in_review)}")
+    for f in in_review:
+        print(f"  #{f.id}  {f.program}  {f.vuln_class}  conf {f.confidence:.2f}  {f.target_url}")
+        print(f"      -> bbv review {f.id} --approve   |   bbv review {f.id} --dismiss")
+
+    # [2] candidates on disk not yet ingested (exact program+vuln_class+target_url diff).
+    existing = {(f.program, f.vuln_class, f.target_url) for f in repo.list_findings()}
+    cand_dir = Path(args.dir or settings.candidates_dir)
+    pending = []
+    for path in sorted(cand_dir.glob("*.json")):
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        key = (d.get("program"), d.get("vuln_class"), d.get("target_url"))
+        if key not in existing:
+            pending.append((path, d))
+    print(f"\n[2] Candidates on disk not yet ingested:  {len(pending)}")
+    for path, d in pending:
+        tag = "   [!] known_pattern_note" if "known_pattern_note" in d else ""
+        print(f"  {path}  {d.get('program')}  {d.get('vuln_class')}  "
+              f"{d.get('target_url')}{tag}")
+    if pending:
+        print("      -> review the file, then: bbv ingest <file> --scope <scope>")
+
+    # [3] approved findings with no report file yet.
+    import re as _re
+    approved = repo.list_findings(m.APPROVED)
+    reports_base = Path(settings.reports_dir)
+    missing = []
+    for f in approved:
+        safe = _re.sub(r"[^A-Za-z0-9._-]", "_", f.program)
+        report_path = reports_base / safe / f"{f.id}_{f.vuln_class}.md"
+        if not report_path.exists():
+            missing.append(f)
+    print(f"\n[3] Approved findings with no report yet:  {len(missing)}")
+    for f in missing:
+        print(f"  #{f.id}  {f.program}  {f.vuln_class}  {f.target_url}")
+        print(f"      -> bbv report {f.id} --platform intigriti")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from .setup import gather_status, render_status, run_self_test, run_setup
+
+    settings = load_settings()
+    if args.check:
+        # Non-interactive status report (safe for scripts/CI). Always exits 0;
+        # it is informational and does not change behavior.
+        print(render_status(gather_status(settings)))
+        return 0
+
+    if args.self_test:
+        # Non-interactive pipeline smoke test (uses a temp DB, never the real one).
+        ok = run_self_test()
+        return 0 if ok else 1
+
+    run_setup()
     return 0
 
 
@@ -302,7 +515,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pi = sub.add_parser("ingest", help="ingest a candidate finding JSON and validate it")
     pi.add_argument("finding", help="path to candidate finding JSON")
-    pi.add_argument("--scope", required=True, help="path to program scope JSON")
+    pi.add_argument("--scope", default=None,
+                    help="path to program scope JSON (default: scopes/<program>.json)")
     pi.set_defaults(func=cmd_ingest)
 
     pr = sub.add_parser("review", help="record your decision on an in_review finding")
@@ -328,14 +542,51 @@ def build_parser() -> argparse.ArgumentParser:
 
     prc = sub.add_parser("recon", help="passive recon: populate the assets table")
     prc.add_argument("program")
-    prc.add_argument("--scope", required=True, help="path to program scope JSON")
+    prc.add_argument("--scope", default=None,
+                     help="path to program scope JSON (default: scopes/<program>.json)")
     prc.set_defaults(func=cmd_recon)
+
+    prun = sub.add_parser("run",
+                          help="chain recon + generate-candidates, then STOP (no ingest)")
+    prun.add_argument("program")
+    prun.add_argument("--scope", default=None,
+                      help="path to program scope JSON (default: scopes/<program>.json)")
+    prun.add_argument("--js-file", action="append",
+                      help="use a local JS file instead of fetching from assets (repeatable)")
+    prun.add_argument("--base-url", default=None,
+                      help="base URL to resolve root-relative endpoints from --js-file")
+    prun.add_argument("--stub-response", default=None,
+                      help="replay a saved Claude JSON response instead of calling the API")
+    prun.add_argument("--out", default=None, help="candidates output dir (default: candidates/)")
+    prun.set_defaults(func=cmd_run)
+
+    pib = sub.add_parser("ingest-batch",
+                         help="ingest every candidate JSON in a directory (full output each)")
+    pib.add_argument("program")
+    pib.add_argument("--dir", default=None, help="candidates dir (default: candidates/)")
+    pib.add_argument("--scope", default=None,
+                     help="path to program scope JSON (default: scopes/<program>.json)")
+    pib.set_defaults(func=cmd_ingest_batch)
+
+    pq = sub.add_parser("queue", help="read-only: what is waiting on you, across programs")
+    pq.add_argument("--dir", default=None, help="candidates dir (default: candidates/)")
+    pq.set_defaults(func=cmd_queue)
+
+    pset = sub.add_parser("setup",
+                          help="show config status and fix gaps interactively")
+    pset.add_argument("--check", action="store_true",
+                      help="print status non-interactively and exit (no prompts)")
+    pset.add_argument("--self-test", action="store_true", dest="self_test",
+                      help="run a pipeline smoke test against an in-process mock "
+                           "server using a temporary DB (never touches the real DB)")
+    pset.set_defaults(func=cmd_setup)
 
     pg = sub.add_parser("generate-candidates",
                         help="reason over JS assets and write candidate finding JSON "
                              "(does NOT ingest or validate)")
     pg.add_argument("program")
-    pg.add_argument("--scope", required=True, help="path to program scope JSON")
+    pg.add_argument("--scope", default=None,
+                    help="path to program scope JSON (default: scopes/<program>.json)")
     pg.add_argument("--js-file", action="append",
                     help="use a local JS file instead of fetching from assets (repeatable)")
     pg.add_argument("--base-url", default=None,
