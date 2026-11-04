@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     katana_max_depth: int = 2
 
     candidates_dir: str = "candidates"
+    reports_dir: str = "reports"
 
     # --- Claude API (reasoning steps ONLY) ---
     # Goes to api.anthropic.com — reasoning infrastructure, NOT a program target,

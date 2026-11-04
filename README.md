@@ -9,8 +9,9 @@ The gate (milestone 1) is fed by a front end (milestone 2): passive recon to
 discover assets, then candidate generation that reasons over discovered JS with
 Claude and emits candidate finding JSON. Over the rejected pile sits an advisory
 learning layer (milestone 3): a deterministic false-positive signature catalog
-that makes recurring rejection causes visible for triage. No platform
-submission, no reporting (clean extension points are left for them).
+that makes recurring rejection causes visible for triage. Approved findings can
+be turned into platform-formatted write-ups (milestone 4) — documents you read,
+edit, and submit yourself. **This repo never submits anything to a platform.**
 
 ## Install
 
@@ -125,11 +126,53 @@ visible.
   are unknown until the real probe runs, so they are deliberately *not* guessed
   at. The note never changes core fields, removes a candidate, or filters output.
 
+## Reports (approved findings → platform write-ups)
+
+Once you've `--approve`d a finding, turn it into a submittable report:
+
+```bash
+python -m bbv report <finding_id> --platform intigriti            # writes a file
+python -m bbv report <finding_id> --platform intigriti --dry-run  # prints instead
+```
+
+Reports are written to `reports/<program>/<finding_id>_<vuln_class>.md`. The
+command **refuses any finding not in `approved`** (clear error, not a crash) and
+lists available platforms if you pass an unknown one.
+
+**This tool never submits anything.** There is no bug-bounty-platform API code
+in this repo. Generating a report produces a Markdown file; pasting/uploading it
+to the platform is a manual action you perform yourself.
+
+### How reports stay honest
+
+- **Every factual claim is deterministic.** Titles, steps-to-reproduce, impact,
+  CVSS, and CWE are assembled in `reporting/base.py` from the actual
+  finding/evidence/transition rows — the real canary markers, payloads, URLs,
+  HTTP statuses, and similarity numbers. Steps are generated from the evidence
+  trail, not a generic template.
+- **No LLM in the report path.** The milestone's one permitted LLM use (polishing
+  prose *around* already-assembled facts) is deliberately deferred: routing any
+  factual claim through a model risks drift, so for now nothing in a report comes
+  from an LLM. This keeps every claim diffable against the evidence.
+- **No evidence is dropped.** Every evidence row is reproduced verbatim in the
+  report's Evidence Appendix, alongside the full validation trail.
+- **Severity is derived, never guessed** (`severity.py`): a deterministic
+  CVSS 3.1 + CWE mapping where each metric is read off the evidence and its
+  reasoning is printed in the report so it is auditable. It scores
+  *conservatively* — e.g. an IDOR's Confidentiality is set to Low (not High)
+  because the evidence does not quantify the exposed data's sensitivity, and the
+  report says so and invites manual adjustment. CWE: XSS→CWE-79, IDOR→CWE-639,
+  SQLi→CWE-89.
+- **Formatter registry.** `reporting/` mirrors the validator registry: Intigriti
+  ships today; HackerOne/Bugcrowd formatters can be added by registering another
+  `Reporter`, with the deterministic fact-assembly reused unchanged.
+
 ## Lifecycle
 
 ```
 new → validating → (validated → in_review) | rejected
 in_review → approved | dismissed      # your decision, via `review`
+approved → (report)                    # milestone 4: generates a file, never submits
 ```
 
 Confidence seeds at 0.30. A validator returns a confidence delta plus evidence;
@@ -195,9 +238,11 @@ src/bbv/
   recon.py                                  # subprocess wrappers for subfinder/httpx/katana
   claude_client.py candidate_schema.py candidates.py   # JS reasoning -> candidate JSON
   signatures.py                             # deterministic FP fingerprints (advisory)
+  severity.py                               # deterministic CVSS 3.1 / CWE mapping
+  reporting/                                # formatter registry; Intigriti markdown
   pipeline.py cli.py mockserver.py
 tests/      # scope, rate limiter, state machine, repo, validators, pipeline,
-            # recon, candidates, signatures, and regression fixtures
+            # recon, candidates, signatures, severity, reporting, regression fixtures
 samples/    # scope, one finding per validator, sample JS + replay Claude response
 ```
 
@@ -222,6 +267,8 @@ scope file that lists `127.0.0.1`.
 
 ## Not yet built (extension points)
 
-Platform submission and report generation. The validator registry, the `assets`
-table, the candidate schema, and the signature catalog (useful future input for
-calibration/RAG) are where those plug in.
+Additional platform formatters (HackerOne/Bugcrowd — register a `Reporter`) and
+optional LLM prose-polishing of reports (deferred; see above). Platform
+*submission* is intentionally out of scope and remains a manual human action.
+The validator registry, the `assets` table, the candidate schema, the signature
+catalog, and the formatter registry are where future work plugs in.

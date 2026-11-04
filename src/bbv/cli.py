@@ -113,6 +113,50 @@ def cmd_mockserver(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    import re as _re
+
+    from .reporting import build_facts, get_reporter, known_platforms
+
+    settings = load_settings()
+    repo = _open_repo(settings)
+
+    reporter = get_reporter(args.platform)
+    if reporter is None:
+        print(f"unknown platform {args.platform!r}. Available: "
+              f"{', '.join(known_platforms())}", file=sys.stderr)
+        return 2
+
+    f = repo.get_finding(args.id)
+    if f is None:
+        print(f"no finding #{args.id}", file=sys.stderr)
+        return 2
+
+    # CRITICAL: reports are only generated for human-approved findings.
+    if f.state != m.APPROVED:
+        print(f"REFUSED: finding #{args.id} is in state {f.state!r}; reports are "
+              "only generated for 'approved' findings (use "
+              f"`bbv review {args.id} --approve` first).", file=sys.stderr)
+        return 2
+
+    facts = build_facts(f, repo.list_evidence(args.id), repo.list_transitions(args.id))
+    report = reporter.render(facts)
+
+    if args.dry_run:
+        print(report)
+        return 0
+
+    safe_program = _re.sub(r"[^A-Za-z0-9._-]", "_", f.program)
+    out_dir = Path(args.out or settings.reports_dir) / safe_program
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{f.id}_{f.vuln_class}.md"
+    path.write_text(report, encoding="utf-8")
+    print(f"wrote {path}")
+    print("NOTE: this report has NOT been submitted. Submission is a manual "
+          "action you perform on the platform yourself.")
+    return 0
+
+
 def cmd_signatures(args: argparse.Namespace) -> int:
     settings = load_settings()
     repo = _open_repo(settings)
@@ -300,6 +344,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="replay a saved Claude JSON response instead of calling the API")
     pg.add_argument("--out", default=None, help="output dir (default: candidates/)")
     pg.set_defaults(func=cmd_generate_candidates)
+
+    prep = sub.add_parser("report",
+                          help="generate a platform-formatted report for an APPROVED finding")
+    prep.add_argument("id", type=int)
+    prep.add_argument("--platform", required=True, help="e.g. intigriti")
+    prep.add_argument("--dry-run", action="store_true",
+                      help="print to stdout instead of writing a file")
+    prep.add_argument("--out", default=None, help="output base dir (default: reports/)")
+    prep.set_defaults(func=cmd_report)
 
     psig = sub.add_parser("signatures",
                           help="browse the advisory false-positive signature catalog")

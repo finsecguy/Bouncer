@@ -10,3 +10,4 @@ data/
 *.egg-info/
 .pytest_cache/
 candidates/
+reports/
