@@ -356,8 +356,30 @@ def cmd_generate_candidates(args: argparse.Namespace) -> int:
     return 0
 
 
+def _confirm_auto_chain(program: str, scope_path: str, assume_yes: bool,
+                        inp: Callable[[str], str] = input) -> bool:
+    """Require explicit confirmation before --auto-chain fires live validation,
+    unless --yes was passed. Refuses in a non-interactive shell without --yes."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print("ERROR: --auto-chain needs confirmation; pass --yes for "
+              "non-interactive/scripted use.", file=sys.stderr)
+        return False
+    print("\nWARNING: --auto-chain runs LIVE validation.")
+    print(f"It will, for program '{program}' (scope: {scope_path}):")
+    print("  1. run recon")
+    print("  2. generate candidates")
+    print("  3. immediately ingest each candidate, sending REAL HTTP requests to")
+    print("     in-scope targets and recording evidence-based results")
+    print("It will NOT approve, dismiss, or report anything. `bbv review` and "
+          "`bbv report` remain separate manual steps.")
+    return inp("Type 'yes' to continue: ").strip().lower() in ("y", "yes")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    """Chain recon -> generate-candidates and STOP. No ingest, review, or report."""
+    """Chain recon -> generate-candidates and STOP. With --auto-chain, also
+    ingest each candidate (still stopping before review/report)."""
     settings = load_settings()
     repo = _open_repo(settings)
     resolved = _resolve_scope(args.scope, args.program)
@@ -365,13 +387,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     scope_path, scope = resolved
 
-    print(f"\n== bbv run: {args.program} ==")
+    auto = args.auto_chain
+    # Confirm BEFORE anything runs, so declining does nothing at all.
+    if auto and not _confirm_auto_chain(args.program, scope_path, args.yes):
+        print("Aborted; nothing was run.")
+        return 1
 
-    print("\n-- Stage 1/2: recon --")
+    nst = 3 if auto else 2
+    print(f"\n== bbv run: {args.program}{' (auto-chain)' if auto else ''} ==")
+
+    print(f"\n-- Stage 1/{nst}: recon --")
     summary = _run_recon(settings, repo, scope, args.program)
     _print_recon_summary(summary, repo, args.program)
 
-    print("\n-- Stage 2/2: generate-candidates --")
+    print(f"\n-- Stage 2/{nst}: generate-candidates --")
     result = _run_generate(settings, repo, scope, args.program,
                            js_file=args.js_file, base_url=args.base_url,
                            stub_response=args.stub_response, out=args.out)
@@ -381,13 +410,58 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     paths, candidates = result
     _print_candidate_results(paths, candidates)
-
     out_dir = args.out or settings.candidates_dir
-    print("\n== Done. Nothing was ingested, validated, or submitted. ==")
-    print(f"Next: review the {len(paths)} file(s) in {out_dir}/, then ingest the "
-          "ones worth testing:")
-    print(f"  python -m bbv ingest-batch {args.program}")
-    print(f"  python -m bbv ingest {out_dir}/<file>.json --scope {scope_path}")
+
+    if not auto:
+        print("\n== Done. Nothing was ingested, validated, or submitted. ==")
+        print(f"Next: review the {len(paths)} file(s) in {out_dir}/, then ingest "
+              "the ones worth testing:")
+        print(f"  python -m bbv ingest-batch {args.program}")
+        print(f"  python -m bbv ingest {out_dir}/<file>.json --scope {scope_path}")
+        return 0
+
+    # --- auto-chain stage 3: ingest each candidate (same path as ingest-batch) ---
+    cap = args.max_candidates
+    to_ingest = paths if cap is None else paths[:cap]
+    skipped = [] if cap is None else paths[cap:]
+
+    print(f"\n-- Stage 3/{nst}: ingest (auto-chain) --")
+    if cap is not None:
+        print(f"  (--max-candidates {cap}: ingesting {len(to_ingest)} of {len(paths)})")
+    rows: list[tuple] = []
+    for path in to_ingest:
+        print(f"\n{'='*70}\n# {path}\n{'='*70}")
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        fid = _ingest_finding_data(repo, scope, settings, data)
+        if fid is None:
+            rows.append((Path(path).name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "REFUSED (out of scope)", "-"))
+            continue
+        _print_trail(repo, fid)   # full per-finding evidence, never summarized
+        f = repo.get_finding(fid)
+        rows.append((f"#{fid}", f.vuln_class, f.target_url, f.state,
+                     f"{f.confidence:.2f}"))
+
+    inr = sum(1 for r in rows if r[3] == m.IN_REVIEW)
+    rej = sum(1 for r in rows if r[3] == m.REJECTED)
+    other = len(rows) - inr - rej
+
+    print(f"\n== Auto-chain complete: {args.program} ==")
+    print(f"Ingested {len(to_ingest)} of {len(paths)} candidate(s). Outcomes:")
+    print(f"  in_review : {inr}")
+    print(f"  rejected  : {rej}")
+    if other:
+        print(f"  other     : {other}")
+    for name, vc, target, state, conf in rows:
+        print(f"  {name:<6} {vc:<15} {state:<22} {conf:<5} {target}")
+    if skipped:
+        print(f"\nNote: --max-candidates {cap} applied; {len(skipped)} candidate "
+              f"file(s) left un-ingested in {out_dir}/ for manual review:")
+        for p in skipped:
+            print(f"  {p}")
+    print("\nNothing was approved, dismissed, or reported.")
+    print("Next: review what is in_review:")
+    print("  bbv review <id> --approve | --dismiss")
     return 0
 
 
@@ -558,6 +632,15 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--stub-response", default=None,
                       help="replay a saved Claude JSON response instead of calling the API")
     prun.add_argument("--out", default=None, help="candidates output dir (default: candidates/)")
+    prun.add_argument("--auto-chain", action="store_true", dest="auto_chain",
+                      help="Chains recon, candidate generation, and ingestion. Never "
+                           "approves or submits findings; `bbv review` and `bbv report` "
+                           "remain separate manual steps.")
+    prun.add_argument("--yes", action="store_true",
+                      help="skip the --auto-chain confirmation prompt (for scripting)")
+    prun.add_argument("--max-candidates", type=int, default=None, dest="max_candidates",
+                      help="cap how many candidates --auto-chain ingests in one run "
+                           "(default: no cap; set one for unattended/scheduled use)")
     prun.set_defaults(func=cmd_run)
 
     pib = sub.add_parser("ingest-batch",

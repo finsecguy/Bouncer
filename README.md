@@ -157,6 +157,17 @@ shows *more* per invocation, never less.
   not ingest, validate, review, or report, and it ends by telling you the next
   manual step. `run` accepts the same `--js-file` / `--base-url` /
   `--stub-response` options as generate-candidates.
+- **`bbv run <program> --auto-chain`** is an opt-in extension that also ingests
+  each generated candidate (running the real validator, full per-finding
+  evidence printed) before stopping. **It chains recon, candidate generation,
+  and ingestion. It never approves or submits findings; `bbv review` and
+  `bbv report` remain separate manual steps.** Because it fires live validation
+  requests, it asks for confirmation first unless you pass `--yes` (required for
+  non-interactive use). `--max-candidates N` caps how many candidates it ingests
+  in one run; set it for unattended or scheduled use. Auto-chained ingestion uses
+  the exact same validator path as a manual `ingest`, so the evidence it records
+  is identical to ingesting the same candidate by hand. The default `run` (no
+  flag) is unchanged.
 - **`bbv ingest-batch <program> [--dir candidates/]`** ingests every candidate
   JSON in a directory, one at a time (sequential, so rate limiting and scope
   enforcement behave exactly as single ingests). For each file it prints the

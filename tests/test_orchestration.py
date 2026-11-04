@@ -149,6 +149,91 @@ def test_ingest_batch_prints_full_trail_plus_summary(mock_server, tmp_path, monk
 
 # ---------------- queue: read-only ----------------
 
+SQLI_ONLY_STUB = json.dumps({"endpoints": [
+    {"url": "/item", "params": ["id"], "id_like_params": ["id"],
+     "suspected_vuln_class": "sqli_boolean", "reasoning": "id into lookup"}]})
+
+
+def _digest_findings(db_path):
+    repo = Repository(connect(db_path))
+    out = []
+    for f in repo.list_findings():
+        evs = [(e.kind, e.data) for e in repo.list_evidence(f.id)]
+        out.append((f.vuln_class, f.target_url, f.state, round(f.confidence, 3), evs))
+    return sorted(out, key=lambda r: r[1])
+
+
+def test_auto_chain_evidence_identical_to_manual(mock_server, tmp_path, monkeypatch):
+    """Same candidate, ingested via the default manual path vs via --auto-chain,
+    must produce identical evidence/confidence/final state."""
+    scope = _scope_file(tmp_path)
+    stub = tmp_path / "stub.json"; stub.write_text(SQLI_ONLY_STUB)
+
+    # --- manual path: generate candidate file, then `ingest` it ---
+    s_manual = _settings(tmp_path / "m")
+    gen_dir = tmp_path / "m_cands"
+    _run_cli_with_settings(s_manual, monkeypatch, [
+        "generate-candidates", "demo", "--scope", scope,
+        "--js-file", "samples/sample_app.js", "--base-url", mock_server,
+        "--stub-response", str(stub), "--out", str(gen_dir)])
+    cand_file = next(gen_dir.glob("*sqli_boolean.json"))
+    _run_cli_with_settings(s_manual, monkeypatch,
+                           ["ingest", str(cand_file), "--scope", scope])
+
+    # --- auto-chain path: run generates the same candidate and ingests it ---
+    s_auto = _settings(tmp_path / "a")
+    _run_cli_with_settings(s_auto, monkeypatch, [
+        "run", "demo", "--scope", scope,
+        "--js-file", "samples/sample_app.js", "--base-url", mock_server,
+        "--stub-response", str(stub), "--out", str(tmp_path / "a_cands"),
+        "--auto-chain", "--yes"])
+
+    assert _digest_findings(s_manual.db_path) == _digest_findings(s_auto.db_path)
+
+
+def test_auto_chain_never_reaches_approved_or_report(mock_server, tmp_path, monkeypatch):
+    scope = _scope_file(tmp_path)
+    stub = tmp_path / "stub.json"; stub.write_text(SQLI_ONLY_STUB)
+    s = _settings(tmp_path)
+    _run_cli_with_settings(s, monkeypatch, [
+        "run", "demo", "--scope", scope,
+        "--js-file", "samples/sample_app.js", "--base-url", mock_server,
+        "--stub-response", str(stub), "--out", str(tmp_path / "cands"),
+        "--auto-chain", "--yes"])
+
+    repo = Repository(connect(s.db_path))
+    findings = repo.list_findings()
+    assert findings, "auto-chain should have created findings"
+    # The line that cannot move: nothing is approved, and no report file exists.
+    assert all(f.state in ("in_review", "rejected") for f in findings)
+    assert not list((tmp_path / "reports").rglob("*.md"))
+
+
+def test_auto_chain_refuses_without_yes_noninteractive(mock_server, tmp_path, monkeypatch):
+    scope = _scope_file(tmp_path)
+    stub = tmp_path / "stub.json"; stub.write_text(SQLI_ONLY_STUB)
+    s = _settings(tmp_path)
+    # pytest stdin is not a tty; without --yes, auto-chain must refuse and do nothing.
+    rc = _run_cli_with_settings(s, monkeypatch, [
+        "run", "demo", "--scope", scope,
+        "--js-file", "samples/sample_app.js", "--base-url", mock_server,
+        "--stub-response", str(stub), "--auto-chain"])
+    assert rc == 1
+    assert Repository(connect(s.db_path)).list_findings() == []
+
+
+def test_run_without_auto_chain_ingests_nothing(mock_server, tmp_path, monkeypatch):
+    scope = _scope_file(tmp_path)
+    stub = tmp_path / "stub.json"; stub.write_text(SQLI_ONLY_STUB)
+    s = _settings(tmp_path)
+    _run_cli_with_settings(s, monkeypatch, [
+        "run", "demo", "--scope", scope,
+        "--js-file", "samples/sample_app.js", "--base-url", mock_server,
+        "--stub-response", str(stub), "--out", str(tmp_path / "cands")])
+    # Default run generates candidate files but never ingests, so no findings.
+    assert Repository(connect(s.db_path)).list_findings() == []
+
+
 def test_queue_reports_pending_accurately(tmp_path, monkeypatch, capsys):
     s = _settings(tmp_path)
     repo = Repository(connect(s.db_path)); init_db(repo.conn)
