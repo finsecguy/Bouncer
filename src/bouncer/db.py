@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def connect(db_path: str) -> sqlite3.Connection:
-    """Open a connection with the pragmas bbv relies on.
+    """Open a connection with the pragmas bouncer relies on.
 
     foreign_keys is per-connection, so it must be set here rather than in the
     schema script. WAL is persistent but we assert it anyway so a fresh db gets
@@ -28,7 +28,7 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """Create tables if they do not exist (idempotent)."""
     _migrate(conn)
-    ddl = resources.files("bbv").joinpath("schema.sql").read_text(encoding="utf-8")
+    ddl = resources.files("bouncer").joinpath("schema.sql").read_text(encoding="utf-8")
     conn.executescript(ddl)
 
 

@@ -1,5 +1,5 @@
-from bbv import models as m
-from bbv.severity import assess, compute_base_score, vector_string
+from bouncer import models as m
+from bouncer.severity import assess, compute_base_score, vector_string
 
 
 def _ev(kind, data):
@@ -21,7 +21,7 @@ def test_xss_assessment():
                   target_url="http://127.0.0.1/xss?q=x", request={"inject_param": "q"})
     a = assess(f, [
         _ev("canary_reflection", {"context": "script", "raw_special_chars": True}),
-        _ev("browser_exec", {"status": "confirmed", "marker_attr": "__bbv"}),
+        _ev("browser_exec", {"status": "confirmed", "marker_attr": "__bouncer"}),
     ])
     assert a.cwe_id == "CWE-79"
     assert a.cvss_vector == "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"

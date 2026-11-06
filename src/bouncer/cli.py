@@ -1,4 +1,4 @@
-"""bbv command line. Subcommands: ingest, review, show, list, mockserver."""
+"""bouncer command line. Subcommands: ingest, review, show, list, mockserver."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,20 @@ from .repository import Repository
 from .scope import Scope
 
 
+_LEGACY_DB_HINTED = False
+
+
 def _open_repo(settings) -> Repository:
+    # One-time hint if the default DB moved (bbv -> bouncer) and an old dev DB
+    # still exists. We never auto-migrate, move, or delete it.
+    global _LEGACY_DB_HINTED
+    if (not _LEGACY_DB_HINTED and settings.db_path == "data/bouncer.db"
+            and not Path("data/bouncer.db").exists()
+            and Path("data/bbv.db").exists()):
+        print("NOTE: the default database is now data/bouncer.db. Your existing "
+              "data/bbv.db was left untouched; to keep using it, run:\n"
+              "  mv data/bbv.db data/bouncer.db", file=sys.stderr)
+        _LEGACY_DB_HINTED = True
     conn = connect(settings.db_path)
     init_db(conn)
     return Repository(conn)
@@ -36,10 +49,23 @@ def _resolve_scope(explicit: str | None, program: str) -> tuple[str, Scope] | No
     return path, Scope.load(path)
 
 
-def _ingest_finding_data(repo: Repository, scope: Scope, settings, data: dict) -> int | None:
-    """Shared ingest core used by both `ingest` and `ingest-batch`, so batch
-    behaves identically to a sequence of single ingests. Returns the new finding
-    id, or None if the target was out of scope (refusal already printed)."""
+def _ingest_finding_data(repo: Repository, scope: Scope, settings, data: dict,
+                         rate_limiter=None) -> int | None:
+    """Shared ingest core used by `ingest`, `ingest-batch`, and auto-chain, so
+    all behave identically to a sequence of single ingests. Returns the new
+    finding id, or None if the candidate was refused (reason already printed).
+    Pass a shared ``rate_limiter`` to keep per-host limits across a batch."""
+    from .candidates import has_unfilled_placeholders
+
+    # Refuse candidates still holding REPLACE_* placeholder ids: validating them
+    # wastes live requests and records a bogus false-positive signature. The
+    # human must fill in real ids first (see the candidate's notes).
+    if has_unfilled_placeholders(data):
+        print(f"REFUSED: candidate for {data.get('target_url')} still has "
+              "placeholder ids (REPLACE_A/REPLACE_B). Fill in real object ids you "
+              "own before ingesting it.", file=sys.stderr)
+        return None
+
     finding = m.Finding(
         program=data["program"],
         target_url=data["target_url"],
@@ -54,7 +80,7 @@ def _ingest_finding_data(repo: Repository, scope: Scope, settings, data: dict) -
         return None
     finding_id = repo.create_finding(finding)
     print(f"ingested finding #{finding_id} ({finding.vuln_class}); validating...")
-    validate_finding(repo, repo.get_finding(finding_id), scope, settings)
+    validate_finding(repo, repo.get_finding(finding_id), scope, settings, rate_limiter)
     return finding_id
 
 
@@ -160,7 +186,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if f.state != m.APPROVED:
         print(f"REFUSED: finding #{args.id} is in state {f.state!r}; reports are "
               "only generated for 'approved' findings (use "
-              f"`bbv review {args.id} --approve` first).", file=sys.stderr)
+              f"`bouncer review {args.id} --approve` first).", file=sys.stderr)
         return 2
 
     facts = build_facts(f, repo.list_evidence(args.id), repo.list_transitions(args.id))
@@ -214,7 +240,7 @@ def cmd_signatures(args: argparse.Namespace) -> int:
     rows = repo.list_signatures(program=args.program, vuln_class=args.vuln_class)
     if not rows:
         print("no signatures recorded yet "
-              "(reject some findings, or run: bbv signatures backfill)")
+              "(reject some findings, or run: bouncer signatures backfill)")
         return 0
     hdr = f"{'ID':<4} {'SEEN':<5} {'SCOPE':<8} {'VULN_CLASS':<15} FEATURE_KEY"
     if args.program:
@@ -261,7 +287,7 @@ def cmd_recon(args: argparse.Namespace) -> int:
 
 
 def _run_generate(settings, repo, scope, program, *, js_file, base_url,
-                  stub_response, out) -> tuple[list, list] | None:
+                  stub_response, out, rate_limiter=None) -> tuple[list, list] | None:
     """Shared generate-candidates core. Returns (paths, candidates), or None if
     it could not proceed (message already printed). Writes files; never ingests."""
     from .candidates import (CandidateGenerator, JsInput, annotate_known_patterns,
@@ -276,9 +302,9 @@ def _run_generate(settings, repo, scope, program, *, js_file, base_url,
             Path(stub_response).read_text(encoding="utf-8"), source_label=stub_response)
     else:
         try:
-            extractor = make_extractor(settings)   # picks provider from BBV_LLM_PROVIDER
+            extractor = make_extractor(settings)   # picks provider from BOUNCER_LLM_PROVIDER
         except RuntimeError as e:
-            print(f"ERROR: {e}. Fix provider config (see `bbv setup`), or pass "
+            print(f"ERROR: {e}. Fix provider config (see `bouncer setup`), or pass "
                   "--stub-response to replay a saved response offline.", file=sys.stderr)
             return None
 
@@ -293,7 +319,7 @@ def _run_generate(settings, repo, scope, program, *, js_file, base_url,
             print(f"no in-scope JS assets for '{program}'. Run recon first, or pass "
                   "--js-file <path> --base-url <url>.", file=sys.stderr)
             return None
-        rl = build_rate_limiter(settings)
+        rl = rate_limiter or build_rate_limiter(settings)
         with ScopedHttpClient(scope, rl, timeout=settings.http_timeout,
                               user_agent=settings.user_agent) as http:
             for a in js_assets:
@@ -312,7 +338,7 @@ def _run_generate(settings, repo, scope, program, *, js_file, base_url,
         # for the right reason rather than crashing; malformed-but-parsed output
         # is handled upstream (discarded), so this is a transport/provider fault.
         print(f"ERROR: LLM provider call failed ({type(e).__name__}: {e}). "
-              "Check `bbv setup`, or use --stub-response to work offline.",
+              "Check `bouncer setup`, or use --stub-response to work offline.",
               file=sys.stderr)
         return None
     annotate_known_patterns(candidates, repo)   # advisory only; never filters
@@ -351,7 +377,7 @@ def cmd_generate_candidates(args: argparse.Namespace) -> int:
     paths, candidates = result
     _print_candidate_results(paths, candidates)
     print("\nThese are UNVALIDATED candidates. Review each one, then ingest the "
-          f"ones you choose:\n  python -m bbv ingest <candidate.json> --scope "
+          f"ones you choose:\n  python -m bouncer ingest <candidate.json> --scope "
           f"{scope_path}\nNothing has been validated or submitted.")
     return 0
 
@@ -372,8 +398,8 @@ def _confirm_auto_chain(program: str, scope_path: str, assume_yes: bool,
     print("  2. generate candidates")
     print("  3. immediately ingest each candidate, sending REAL HTTP requests to")
     print("     in-scope targets and recording evidence-based results")
-    print("It will NOT approve, dismiss, or report anything. `bbv review` and "
-          "`bbv report` remain separate manual steps.")
+    print("It will NOT approve, dismiss, or report anything. `bouncer review` and "
+          "`bouncer report` remain separate manual steps.")
     return inp("Type 'yes' to continue: ").strip().lower() in ("y", "yes")
 
 
@@ -394,7 +420,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     nst = 3 if auto else 2
-    print(f"\n== bbv run: {args.program}{' (auto-chain)' if auto else ''} ==")
+    print(f"\n== bouncer run: {args.program}{' (auto-chain)' if auto else ''} ==")
+
+    # One rate limiter shared across the JS fetch and every auto-chain ingest, so
+    # per-host limits and 429 backoff hold across the whole run (not per finding).
+    from .pipeline import build_rate_limiter
+    shared_rl = build_rate_limiter(settings) if auto else None
 
     print(f"\n-- Stage 1/{nst}: recon --")
     summary = _run_recon(settings, repo, scope, args.program)
@@ -403,7 +434,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"\n-- Stage 2/{nst}: generate-candidates --")
     result = _run_generate(settings, repo, scope, args.program,
                            js_file=args.js_file, base_url=args.base_url,
-                           stub_response=args.stub_response, out=args.out)
+                           stub_response=args.stub_response, out=args.out,
+                           rate_limiter=shared_rl)
     if result is None:
         print("\n(recon completed; no candidates were generated. Nothing was "
               "ingested, validated, or submitted.)")
@@ -416,8 +448,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("\n== Done. Nothing was ingested, validated, or submitted. ==")
         print(f"Next: review the {len(paths)} file(s) in {out_dir}/, then ingest "
               "the ones worth testing:")
-        print(f"  python -m bbv ingest-batch {args.program}")
-        print(f"  python -m bbv ingest {out_dir}/<file>.json --scope {scope_path}")
+        print(f"  python -m bouncer ingest-batch {args.program}")
+        print(f"  python -m bouncer ingest {out_dir}/<file>.json --scope {scope_path}")
         return 0
 
     # --- auto-chain stage 3: ingest each candidate (same path as ingest-batch) ---
@@ -428,15 +460,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"\n-- Stage 3/{nst}: ingest (auto-chain) --")
     if cap is not None:
         print(f"  (--max-candidates {cap}: ingesting {len(to_ingest)} of {len(paths)})")
+    existing = {(f.program, f.vuln_class, f.target_url) for f in repo.list_findings()}
     rows: list[tuple] = []
     for path in to_ingest:
         print(f"\n{'='*70}\n# {path}\n{'='*70}")
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        fid = _ingest_finding_data(repo, scope, settings, data)
+        key = (data.get("program"), data.get("vuln_class"), data.get("target_url"))
+        if key in existing:
+            print("  already ingested (same program/vuln_class/target); skipping.")
+            rows.append((Path(path).name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "SKIPPED (already ingested)", "-"))
+            continue
+        fid = _ingest_finding_data(repo, scope, settings, data, shared_rl)
         if fid is None:
             rows.append((Path(path).name, data.get("vuln_class", "-"),
-                         data.get("target_url", "-"), "REFUSED (out of scope)", "-"))
+                         data.get("target_url", "-"), "REFUSED", "-"))
             continue
+        existing.add(key)
         _print_trail(repo, fid)   # full per-finding evidence, never summarized
         f = repo.get_finding(fid)
         rows.append((f"#{fid}", f.vuln_class, f.target_url, f.state,
@@ -461,13 +501,17 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"  {p}")
     print("\nNothing was approved, dismissed, or reported.")
     print("Next: review what is in_review:")
-    print("  bbv review <id> --approve | --dismiss")
+    print("  bouncer review <id> --approve | --dismiss")
     return 0
 
 
 def cmd_ingest_batch(args: argparse.Namespace) -> int:
-    """Ingest every candidate JSON in a directory, sequentially. Full per-finding
-    output is printed for each (never abbreviated), plus a summary table."""
+    """Ingest the named program's candidate JSON files in a directory, one at a
+    time. Full per-finding output is printed for each (never abbreviated), plus a
+    summary table. Files for other programs, and candidates already ingested, are
+    skipped."""
+    from .pipeline import build_rate_limiter
+
     settings = load_settings()
     repo = _open_repo(settings)
 
@@ -476,6 +520,11 @@ def cmd_ingest_batch(args: argparse.Namespace) -> int:
     if not files:
         print(f"no candidate JSON files in {directory}/", file=sys.stderr)
         return 2
+
+    # Shared across the batch so per-host rate limits and 429 backoff hold across
+    # findings instead of resetting per file.
+    rl = build_rate_limiter(settings)
+    existing = {(f.program, f.vuln_class, f.target_url) for f in repo.list_findings()}
 
     rows: list[tuple] = []
     for path in files:
@@ -487,18 +536,34 @@ def cmd_ingest_batch(args: argparse.Namespace) -> int:
             rows.append((path.name, "-", "-", "SKIPPED (bad JSON)", "-"))
             continue
 
-        resolved = _resolve_scope(args.scope, data.get("program", args.program))
+        # Only ingest candidates for the program named on the command line, so a
+        # shared candidates/ dir cannot leak live probes to another program.
+        if data.get("program") != args.program:
+            print(f"  not program '{args.program}' (is '{data.get('program')}'); skipping.")
+            rows.append((path.name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "SKIPPED (other program)", "-"))
+            continue
+
+        key = (data.get("program"), data.get("vuln_class"), data.get("target_url"))
+        if key in existing:
+            print("  already ingested (same program/vuln_class/target); skipping.")
+            rows.append((path.name, data.get("vuln_class", "-"),
+                         data.get("target_url", "-"), "SKIPPED (already ingested)", "-"))
+            continue
+
+        resolved = _resolve_scope(args.scope, data["program"])
         if resolved is None:
             rows.append((path.name, data.get("vuln_class", "-"),
                          data.get("target_url", "-"), "SKIPPED (no scope)", "-"))
             continue
         _, scope = resolved
 
-        fid = _ingest_finding_data(repo, scope, settings, data)
+        fid = _ingest_finding_data(repo, scope, settings, data, rl)
         if fid is None:
             rows.append((path.name, data.get("vuln_class", "-"),
-                         data.get("target_url", "-"), "REFUSED (out of scope)", "-"))
+                         data.get("target_url", "-"), "REFUSED", "-"))
             continue
+        existing.add(key)
         _print_trail(repo, fid)   # identical full output to single `ingest`
         f = repo.get_finding(fid)
         rows.append((f"#{fid}", f.vuln_class, f.target_url, f.state,
@@ -518,14 +583,14 @@ def cmd_queue(args: argparse.Namespace) -> int:
     settings = load_settings()
     repo = _open_repo(settings)
 
-    print("== bbv queue: what needs you ==  (read-only; nothing is changed)")
+    print("== bouncer queue: what needs you ==  (read-only; nothing is changed)")
 
     # [1] findings in review.
     in_review = repo.list_findings(m.IN_REVIEW)
     print(f"\n[1] Findings in review (awaiting approve/dismiss):  {len(in_review)}")
     for f in in_review:
         print(f"  #{f.id}  {f.program}  {f.vuln_class}  conf {f.confidence:.2f}  {f.target_url}")
-        print(f"      -> bbv review {f.id} --approve   |   bbv review {f.id} --dismiss")
+        print(f"      -> bouncer review {f.id} --approve   |   bouncer review {f.id} --dismiss")
 
     # [2] candidates on disk not yet ingested (exact program+vuln_class+target_url diff).
     existing = {(f.program, f.vuln_class, f.target_url) for f in repo.list_findings()}
@@ -545,7 +610,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         print(f"  {path}  {d.get('program')}  {d.get('vuln_class')}  "
               f"{d.get('target_url')}{tag}")
     if pending:
-        print("      -> review the file, then: bbv ingest <file> --scope <scope>")
+        print("      -> review the file, then: bouncer ingest <file> --scope <scope>")
 
     # [3] approved findings with no report file yet.
     import re as _re
@@ -560,7 +625,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     print(f"\n[3] Approved findings with no report yet:  {len(missing)}")
     for f in missing:
         print(f"  #{f.id}  {f.program}  {f.vuln_class}  {f.target_url}")
-        print(f"      -> bbv report {f.id} --platform intigriti")
+        print(f"      -> bouncer report {f.id} --platform intigriti")
     return 0
 
 
@@ -584,7 +649,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="bbv", description=__doc__)
+    p = argparse.ArgumentParser(prog="bouncer", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("ingest", help="ingest a candidate finding JSON and validate it")
@@ -634,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--out", default=None, help="candidates output dir (default: candidates/)")
     prun.add_argument("--auto-chain", action="store_true", dest="auto_chain",
                       help="Chains recon, candidate generation, and ingestion. Never "
-                           "approves or submits findings; `bbv review` and `bbv report` "
+                           "approves or submits findings; `bouncer review` and `bouncer report` "
                            "remain separate manual steps.")
     prun.add_argument("--yes", action="store_true",
                       help="skip the --auto-chain confirmation prompt (for scripting)")

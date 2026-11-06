@@ -24,7 +24,7 @@ from typing import Protocol
 from .candidate_schema import RESPONSE_SCHEMA_HINT, ExtractionResult
 from .config import Settings
 
-log = logging.getLogger("bbv.llm")
+log = logging.getLogger("bouncer.llm")
 
 _SYSTEM = (
     "You are a security recon assistant for an AUTHORIZED bug bounty engagement. "
@@ -50,7 +50,7 @@ class AnthropicProvider:
 
     def __init__(self, api_key: str, model: str, max_tokens: int):
         if not api_key:
-            raise RuntimeError("provider=anthropic but BBV_ANTHROPIC_API_KEY is not set")
+            raise RuntimeError("provider=anthropic but BOUNCER_ANTHROPIC_API_KEY is not set")
         import anthropic
 
         self._client = anthropic.Anthropic(api_key=api_key)
@@ -75,13 +75,18 @@ class OpenAIProvider:
     OpenAI-compatible self-hosted endpoint by overriding base_url; some such
     servers accept any (or no) API key."""
 
-    def __init__(self, api_key: str, model: str, base_url: str, max_tokens: int):
+    def __init__(self, api_key: str, model: str, base_url: str, max_tokens: int,
+                 timeout: float = 60.0, max_retries: int = 2):
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._max_tokens = max_tokens
+        self._timeout = timeout
+        self._max_retries = max_retries
 
     def complete(self, prompt: str, *, system: str | None = None) -> str:
+        import time
+
         import httpx
 
         messages = []
@@ -91,16 +96,41 @@ class OpenAIProvider:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        resp = httpx.post(
-            f"{self._base_url}/chat/completions",
-            json={"model": self._model, "max_tokens": self._max_tokens,
-                  "messages": messages},
-            headers=headers,
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"] or ""
+
+        # Newer OpenAI reasoning models reject `max_tokens` and require
+        # `max_completion_tokens`. Start with the widely-accepted `max_tokens`
+        # (works for self-hosted and classic models) and fall back once if the
+        # server tells us to switch.
+        token_field = "max_tokens"
+        attempt = 0
+        while True:
+            body = {"model": self._model, token_field: self._max_tokens,
+                    "messages": messages}
+            try:
+                resp = httpx.post(f"{self._base_url}/chat/completions", json=body,
+                                  headers=headers, timeout=self._timeout)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                if attempt >= self._max_retries:
+                    raise
+                time.sleep(2 ** attempt)
+                attempt += 1
+                continue
+
+            if resp.status_code == 400 and token_field == "max_tokens" and \
+                    "max_completion_tokens" in resp.text:
+                token_field = "max_completion_tokens"
+                continue  # retry immediately with the required field name
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt >= self._max_retries:
+                    resp.raise_for_status()
+                retry_after = resp.headers.get("Retry-After")
+                delay = float(retry_after) if (retry_after or "").isdigit() else 2 ** attempt
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"] or ""
 
 
 def make_provider(settings: Settings) -> tuple[LLMProvider, str]:
@@ -113,17 +143,23 @@ def make_provider(settings: Settings) -> tuple[LLMProvider, str]:
                                  settings.anthropic_max_tokens)
         return prov, f"anthropic:{settings.anthropic_model}"
     if p in ("openai", "self_hosted"):
-        base_url = settings.openai_base_url
-        if p == "self_hosted" and not base_url:
-            raise RuntimeError("provider=self_hosted but BBV_OPENAI_BASE_URL is not set")
-        if p == "openai" and not settings.openai_api_key:
-            raise RuntimeError("provider=openai but BBV_OPENAI_API_KEY is not set")
-        base_url = base_url or "https://api.openai.com/v1"
+        if p == "openai":
+            if not settings.openai_api_key:
+                raise RuntimeError("provider=openai but BOUNCER_OPENAI_API_KEY is not set")
+            # provider=openai ALWAYS uses the official endpoint. A base_url left
+            # over from a previous self_hosted config must never redirect the
+            # real OpenAI key to some other (possibly plain-http) host.
+            base_url = "https://api.openai.com/v1"
+        else:  # self_hosted
+            base_url = settings.openai_base_url
+            if not base_url:
+                raise RuntimeError("provider=self_hosted but BOUNCER_OPENAI_BASE_URL is not set")
         prov = OpenAIProvider(settings.openai_api_key, settings.openai_model, base_url,
-                              settings.openai_max_tokens)
+                              settings.openai_max_tokens, settings.openai_timeout,
+                              settings.openai_max_retries)
         return prov, f"{p}:{settings.openai_model}"
     raise RuntimeError(
-        f"unknown BBV_LLM_PROVIDER {p!r} (expected anthropic | openai | self_hosted)")
+        f"unknown BOUNCER_LLM_PROVIDER {p!r} (expected anthropic | openai | self_hosted)")
 
 
 # --------------------------------------------------------------------------

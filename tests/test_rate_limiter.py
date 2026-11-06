@@ -1,4 +1,4 @@
-from bbv.rate_limiter import RateLimiter
+from bouncer.rate_limiter import RateLimiter
 
 
 class FakeClock:

@@ -6,7 +6,7 @@ Two stages:
    context (script body, attribute that can be broken out of, event handler)
    rather than HTML-encoded text.
 2. Execution confirmation with Playwright: inject a benign payload that sets
-   ``window.__bbv_<marker>`` and check it actually ran. High confidence is
+   ``window.__bouncer_<marker>`` and check it actually ran. High confidence is
    granted ONLY on confirmed execution. If Chromium is unavailable, the
    validator stays below the validated threshold and says why.
 
@@ -43,7 +43,7 @@ class ReflectedXssValidator(Validator):
                 "no inject_param specified in finding.request",
             )
 
-        marker = "bbv" + uuid.uuid4().hex[:12]
+        marker = "bouncer" + uuid.uuid4().hex[:12]
         # Canary carries marker + the chars needed to break out of HTML/attrs.
         canary = f"{marker}'\"<>"
         url = _inject_query(finding.target_url, param, canary)

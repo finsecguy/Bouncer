@@ -2,21 +2,30 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Backward-compat: the env prefix was renamed BBV_ -> BOUNCER_. Legacy BBV_*
+# names keep working for this version, with a one-time deprecation notice, so an
+# existing .env does not silently stop working after the rename.
+_LEGACY_PREFIX = "BBV_"
+_NEW_PREFIX = "BOUNCER_"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_prefix="BBV_",
+        env_prefix="BOUNCER_",
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    db_path: str = "data/bbv.db"
+    db_path: str = "data/bouncer.db"
 
     # Rate limiting (conservative defaults).
     rate_per_host: float = 2.0
@@ -26,7 +35,7 @@ class Settings(BaseSettings):
 
     # HTTP
     http_timeout: float = 15.0
-    user_agent: str = "bbv-validator/0.1"
+    user_agent: str = "bouncer-validator/0.1"
 
     # IDOR sessions: JSON header dicts. Empty => IDOR validator cannot run.
     idor_session_a: dict[str, str] = Field(default_factory=dict)
@@ -60,6 +69,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     openai_base_url: str = ""          # blank => OpenAI's real endpoint; required for self_hosted
     openai_max_tokens: int = 2048
+    openai_timeout: float = 60.0       # self-hosted models can be slow; make it configurable
+    openai_max_retries: int = 2        # retry transient 429/5xx/timeouts with backoff
 
     @field_validator("idor_session_a", "idor_session_b", mode="before")
     @classmethod
@@ -71,5 +82,41 @@ class Settings(BaseSettings):
         return v
 
 
+def _migrate_legacy_env(env_path: str = ".env") -> None:
+    """Map any legacy BBV_* variable (from the environment or .env) onto its
+    BOUNCER_* equivalent when the new name is not already set, printing a
+    one-time deprecation notice to stderr. Never overwrites a value the user has
+    already provided under the new name."""
+    legacy: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k.startswith(_LEGACY_PREFIX):
+            legacy[k] = v
+    p = Path(env_path)
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith(_LEGACY_PREFIX) and "=" in s and not s.startswith("#"):
+                k, _, v = s.partition("=")
+                legacy.setdefault(k.strip(), v.strip())
+
+    def _env_file_has(key: str) -> bool:
+        if not p.exists():
+            return False
+        for line in p.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith(f"{key}=") and not s.startswith("#"):
+                return True
+        return False
+
+    for old, val in legacy.items():
+        new = _NEW_PREFIX + old[len(_LEGACY_PREFIX):]
+        if new in os.environ or _env_file_has(new):
+            continue  # the new name wins; no migration, no notice
+        os.environ[new] = val
+        print(f"DEPRECATION: {old} is deprecated; rename it to {new} in your .env. "
+              f"Honoring {old} for now.", file=sys.stderr)
+
+
 def load_settings() -> Settings:
+    _migrate_legacy_env()
     return Settings()

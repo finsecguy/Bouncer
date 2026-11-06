@@ -2,10 +2,10 @@
 rejection across ALL providers, and provenance tagging."""
 import pytest
 
-from bbv.candidates import CandidateGenerator
-from bbv.claude_client import (LLMExtractor, make_extractor, make_provider)
-from bbv.config import Settings
-from bbv.scope import Scope
+from bouncer.candidates import CandidateGenerator
+from bouncer.claude_client import (LLMExtractor, make_extractor, make_provider)
+from bouncer.config import Settings
+from bouncer.scope import Scope
 
 
 class FakeProvider:
@@ -45,7 +45,7 @@ def test_notes_tag_provenance_per_provider(tag, expected):
     ext = LLMExtractor(FakeProvider(GOOD), f"ai-sourced:{tag}")
     scope = Scope.from_dict({"in_domains": ["x.test"], "in_cidrs": []})
     gen = CandidateGenerator("demo", scope, ext)
-    from bbv.candidates import JsInput
+    from bouncer.candidates import JsInput
     cands = gen.generate([JsInput("app.js", "http://x.test/", "//js")])
     assert cands and cands[0]["notes"].startswith(expected)
 

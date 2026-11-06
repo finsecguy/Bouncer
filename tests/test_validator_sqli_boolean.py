@@ -1,7 +1,7 @@
-from bbv import models as m
-from bbv.models import ValidationResult
-from bbv.validators import get_validator
-from bbv.validators.base import ValidatorContext
+from bouncer import models as m
+from bouncer.models import ValidationResult
+from bouncer.validators import get_validator
+from bouncer.validators.base import ValidatorContext
 
 
 def _finding(base, true_p="1 AND 1=1", false_p="1 AND 1=2"):

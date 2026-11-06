@@ -1,6 +1,6 @@
 import pytest
 
-from bbv.scope import Scope, ScopeError
+from bouncer.scope import Scope, ScopeError
 
 
 @pytest.fixture

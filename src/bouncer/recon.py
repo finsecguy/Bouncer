@@ -23,7 +23,7 @@ from .config import Settings
 from .repository import Repository
 from .scope import Scope
 
-log = logging.getLogger("bbv.recon")
+log = logging.getLogger("bouncer.recon")
 
 
 @dataclass

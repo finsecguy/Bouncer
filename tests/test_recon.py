@@ -3,12 +3,12 @@ import types
 
 import pytest
 
-from bbv import models as m
-from bbv.config import Settings
-from bbv.db import connect, init_db
-from bbv.recon import ReconRunner
-from bbv.repository import Repository
-from bbv.scope import Scope
+from bouncer import models as m
+from bouncer.config import Settings
+from bouncer.db import connect, init_db
+from bouncer.recon import ReconRunner
+from bouncer.repository import Repository
+from bouncer.scope import Scope
 
 
 def _repo(tmp_path):
@@ -43,7 +43,7 @@ def test_recon_seeds_assets_without_tools(tmp_path):
 def test_subfinder_output_scope_checked(tmp_path, monkeypatch):
     """A discovered out-of-scope subdomain is recorded as out-of-scope (not
     dropped), and out-of-scope hosts are never fed to the active probers."""
-    import bbv.recon as recon
+    import bouncer.recon as recon
 
     repo = _repo(tmp_path)
     s = Settings(_env_file=None)
@@ -71,7 +71,7 @@ def test_subfinder_output_scope_checked(tmp_path, monkeypatch):
 def test_httpx_name_collision_guarded(tmp_path, monkeypatch):
     """A non-ProjectDiscovery 'httpx' on PATH (e.g. the Python httpx CLI) must
     not be invoked as the recon tool."""
-    import bbv.recon as recon
+    import bouncer.recon as recon
     repo = _repo(tmp_path)
     s = Settings(_env_file=None)
 

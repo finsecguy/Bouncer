@@ -1,9 +1,9 @@
 import json
 
-from bbv.candidate_schema import ExtractionResult
-from bbv.candidates import AI_SOURCE_TAG, CandidateGenerator, JsInput, write_candidates
-from bbv.claude_client import ReplayExtractor, _parse_and_validate
-from bbv.scope import Scope
+from bouncer.candidate_schema import ExtractionResult
+from bouncer.candidates import AI_SOURCE_TAG, CandidateGenerator, JsInput, write_candidates
+from bouncer.claude_client import ReplayExtractor, _parse_and_validate
+from bouncer.scope import Scope
 
 
 def _scope():

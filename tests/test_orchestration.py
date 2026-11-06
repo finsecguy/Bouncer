@@ -7,16 +7,16 @@ from urllib.parse import urlsplit
 
 import pytest
 
-import bbv.cli as cli
-from bbv import models as m
-from bbv.config import Settings
-from bbv.db import connect, init_db
-from bbv.repository import Repository
+import bouncer.cli as cli
+from bouncer import models as m
+from bouncer.config import Settings
+from bouncer.db import connect, init_db
+from bouncer.repository import Repository
 
 
 def _settings(tmp_path, **kw):
     s = Settings(_env_file=None)
-    s.db_path = str(tmp_path / "bbv.db")
+    s.db_path = str(tmp_path / "bouncer.db")
     s.candidates_dir = str(tmp_path / "candidates")
     s.reports_dir = str(tmp_path / "reports")
     for k, v in kw.items():

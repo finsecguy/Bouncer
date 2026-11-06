@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from bbv import models as m
-from bbv.db import connect, init_db
-from bbv.reporting import build_facts, get_reporter, known_platforms
-from bbv.repository import Repository
+from bouncer import models as m
+from bouncer.db import connect, init_db
+from bouncer.reporting import build_facts, get_reporter, known_platforms
+from bouncer.repository import Repository
 
 
 @pytest.fixture
@@ -68,12 +68,12 @@ def _approved_xss(repo):
     repo.transition(fid, m.VALIDATING, 0.3, "start")
     repo.transition(fid, m.VALIDATED, 0.9, "confirmed", evidence=[
         m.Evidence(fid, "canary_reflection", {
-            "url": "http://127.0.0.1:8000/xss?q=bbvABC123%27%22", "status": 200,
-            "marker": "bbvABC123", "reflected": True}),
+            "url": "http://127.0.0.1:8000/xss?q=bouncerABC123%27%22", "status": 200,
+            "marker": "bouncerABC123", "reflected": True}),
         m.Evidence(fid, "canary_reflection", {"context": "script", "raw_special_chars": True}),
         m.Evidence(fid, "browser_exec", {
             "status": "confirmed", "url": "http://127.0.0.1:8000/xss?q=payload",
-            "payload": "';window.__bbvABC123=1;//", "marker_attr": "__bbvABC123"})])
+            "payload": "';window.__bouncerABC123=1;//", "marker_attr": "__bouncerABC123"})])
     repo.transition(fid, m.IN_REVIEW, 0.9, "threshold")
     repo.transition(fid, m.APPROVED, 0.9, "approved")
     return fid
@@ -86,15 +86,15 @@ def test_xss_steps_use_real_canary_marker_and_probe_url(repo):
         build_facts(f, repo.list_evidence(fid), repo.list_transitions(fid)))
     # The marker and the real canary probe URL must appear in the steps, not be
     # lost to last-write-wins over the two canary_reflection rows.
-    assert "bbvABC123" in md
-    assert "q=bbvABC123" in md                       # probe URL with canary
-    assert "';window.__bbvABC123=1;//" in md         # real benign exec payload
+    assert "bouncerABC123" in md
+    assert "q=bouncerABC123" in md                       # probe URL with canary
+    assert "';window.__bouncerABC123=1;//" in md         # real benign exec payload
 
 
 @pytest.mark.parametrize("state", [m.NEW, m.VALIDATING, m.REJECTED, m.IN_REVIEW, m.DISMISSED])
 def test_report_cli_refuses_non_approved_states(repo, tmp_path, monkeypatch, settings, state):
     """Report generation must refuse on every non-approved state."""
-    import bbv.cli as cli
+    import bouncer.cli as cli
 
     fid = repo.create_finding(m.Finding(
         program="demo", vuln_class="reflected_xss",
@@ -121,7 +121,7 @@ def test_report_cli_refuses_non_approved_states(repo, tmp_path, monkeypatch, set
 
 
 def test_unknown_platform_lists_available(repo, tmp_path, monkeypatch, settings, capsys):
-    import bbv.cli as cli
+    import bouncer.cli as cli
     fid = _approved_idor(repo)
     s = settings
     s.db_path = repo.conn.execute("PRAGMA database_list").fetchone()["file"]

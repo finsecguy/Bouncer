@@ -22,11 +22,27 @@ from .candidate_schema import ExtractedEndpoint, ExtractionResult
 from .claude_client import EndpointExtractor
 from .scope import Scope
 
-log = logging.getLogger("bbv.candidates")
+log = logging.getLogger("bouncer.candidates")
 
 # Provenance prefix. The full tag records the provider/model that produced a
 # candidate, e.g. "ai-sourced:openai:gpt-4.1-mini" or "ai-sourced:replay".
 AI_SOURCE_TAG = "ai-sourced"
+
+# Sentinel object ids an IDOR candidate ships with; a human must replace them
+# with real ids they own before the finding can be validated meaningfully.
+ID_PLACEHOLDERS = ("REPLACE_A", "REPLACE_B")
+
+
+def has_unfilled_placeholders(data: dict) -> bool:
+    """True if a candidate still carries the REPLACE_* sentinel ids (i.e. it was
+    never edited by a human). Validating such a candidate wastes live requests
+    and poisons the signature catalog with a bogus rejection, so ingest paths
+    skip these."""
+    req = data.get("request", {}) or {}
+    blob = " ".join(str(v) for v in (
+        data.get("target_url", ""), req.get("url_template", ""),
+        req.get("object_id_a", ""), req.get("object_id_b", "")))
+    return any(ph in blob for ph in ID_PLACEHOLDERS)
 
 
 @dataclass
@@ -64,10 +80,19 @@ class CandidateGenerator:
         self.source_tag = getattr(extractor, "source_tag", AI_SOURCE_TAG)
 
     def generate(self, js_inputs: list[JsInput]) -> list[dict]:
-        """Return candidate finding dicts (also the thing written to disk)."""
+        """Return candidate finding dicts (also the thing written to disk).
+
+        Failures are isolated per JS file: if the provider call for one file
+        errors (timeout, 429, transport), that file is logged and skipped so the
+        candidates already extracted from other files are not thrown away."""
         candidates: list[dict] = []
         for js in js_inputs:
-            result = self.extractor.extract(js.text, js.source_url)
+            try:
+                result = self.extractor.extract(js.text, js.source_url)
+            except Exception as e:
+                log.warning("extraction failed for %s (%s); skipping this file",
+                            js.source_url, e)
+                continue
             candidates.extend(self._result_to_candidates(result, js))
         return candidates
 
@@ -102,7 +127,7 @@ class CandidateGenerator:
             return {
                 "program": self.program,
                 "vuln_class": "reflected_xss",
-                "target_url": _set_query_param(abs_url, param, "bbvseed"),
+                "target_url": _set_query_param(abs_url, param, "bouncerseed"),
                 "request": {"method": "GET", "inject_param": param},
                 "notes": note,
             }
@@ -147,7 +172,7 @@ class CandidateGenerator:
                 },
                 "notes": (note + "; REVIEW REQUIRED: fill object_id_a/b with real "
                           "ids you own for accounts A and B, and set "
-                          "BBV_IDOR_SESSION_A/B before ingest."),
+                          "BOUNCER_IDOR_SESSION_A/B before ingest."),
             }
 
         log.info("endpoint %s classed 'unknown'; not emitting a candidate", abs_url)

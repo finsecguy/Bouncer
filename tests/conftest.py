@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from bbv.config import Settings
-from bbv.http_client import ScopedHttpClient
-from bbv.mockserver import start_background
-from bbv.rate_limiter import RateLimiter
-from bbv.scope import Scope
+from bouncer.config import Settings
+from bouncer.http_client import ScopedHttpClient
+from bouncer.mockserver import start_background
+from bouncer.rate_limiter import RateLimiter
+from bouncer.scope import Scope
 
 
 @pytest.fixture(scope="session")

@@ -1,13 +1,13 @@
-"""`bbv setup`: config status + interactive fixes. Secrets go only to .env,
+"""`bouncer setup`: config status + interactive fixes. Secrets go only to .env,
 masked in status, never printed in full."""
 import os
 import stat
 
 import pytest
 
-import bbv.cli as cli
-from bbv import setup as st
-from bbv.config import Settings
+import bouncer.cli as cli
+from bouncer import setup as st
+from bouncer.config import Settings
 
 
 def test_mask_never_reveals_full_secret():
@@ -19,14 +19,14 @@ def test_mask_never_reveals_full_secret():
 
 def test_set_env_var_creates_updates_and_preserves(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("# header\nBBV_DB_PATH=data/x.db\nOTHER=keep\n")
+    env.write_text("# header\nBOUNCER_DB_PATH=data/x.db\nOTHER=keep\n")
 
-    st.set_env_var("BBV_ANTHROPIC_API_KEY", "sk-123", str(env))
-    st.set_env_var("BBV_DB_PATH", "data/y.db", str(env))      # update existing
+    st.set_env_var("BOUNCER_ANTHROPIC_API_KEY", "sk-123", str(env))
+    st.set_env_var("BOUNCER_DB_PATH", "data/y.db", str(env))      # update existing
 
     text = env.read_text()
-    assert "BBV_ANTHROPIC_API_KEY=sk-123" in text
-    assert "BBV_DB_PATH=data/y.db" in text and "data/x.db" not in text
+    assert "BOUNCER_ANTHROPIC_API_KEY=sk-123" in text
+    assert "BOUNCER_DB_PATH=data/y.db" in text and "data/x.db" not in text
     assert "# header" in text and "OTHER=keep" in text       # preserved
     # mode 0600 on POSIX
     if os.name == "posix":
@@ -40,7 +40,7 @@ def test_status_masks_key_and_shows_provider(tmp_path, monkeypatch):
     items = st.gather_status(s, env_path=str(tmp_path / ".env"))
     by_label = {i.label.strip(): i for i in items}
 
-    assert by_label["LLM provider"].value == "anthropic (BBV_ANTHROPIC_API_KEY set)"
+    assert by_label["LLM provider"].value == "anthropic (BOUNCER_ANTHROPIC_API_KEY set)"
     assert by_label["LLM provider"].ok is True
     # The full secret never appears anywhere in the rendered status.
     assert "TOPSECRET9999" not in st.render_status(items)
@@ -52,13 +52,13 @@ def test_status_flags_self_hosted_missing_base_url(tmp_path, monkeypatch):
     s = Settings(_env_file=None, llm_provider="self_hosted")
     by_label = {i.label.strip(): i for i in st.gather_status(s, str(tmp_path / ".env"))}
     assert by_label["LLM provider"].ok is False
-    assert "BBV_OPENAI_BASE_URL not set" in by_label["LLM provider"].value
+    assert "BOUNCER_OPENAI_BASE_URL not set" in by_label["LLM provider"].value
 
 
 def test_check_cli_is_noninteractive_and_exits_zero(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(st, "_chromium_status", lambda: (True, "installed"))
     s = Settings(_env_file=None)
-    s.db_path = str(tmp_path / "bbv.db")
+    s.db_path = str(tmp_path / "bouncer.db")
     monkeypatch.setattr(cli, "load_settings", lambda: s)
     rc = cli.main(["setup", "--check"])
     assert rc == 0
@@ -83,18 +83,18 @@ def test_interactive_choose_openai_provider_writes_env(tmp_path, monkeypatch):
                  out=lambda *_: None)
 
     text = (tmp_path / ".env").read_text()
-    assert "BBV_LLM_PROVIDER=openai" in text
-    assert "BBV_OPENAI_API_KEY=sk-openai-ABCD" in text
+    assert "BOUNCER_LLM_PROVIDER=openai" in text
+    assert "BOUNCER_OPENAI_API_KEY=sk-openai-ABCD" in text
 
 
 def test_self_test_never_touches_dev_db(tmp_path, monkeypatch):
     """Open the real dev DB before and after run_self_test and assert its row
     count is identical: the self-test must use a temporary DB only."""
-    from bbv import models as m
-    from bbv.db import connect, init_db
-    from bbv.repository import Repository
+    from bouncer import models as m
+    from bouncer.db import connect, init_db
+    from bouncer.repository import Repository
 
-    dev_db = tmp_path / "data" / "bbv.db"
+    dev_db = tmp_path / "data" / "bouncer.db"
     dev_db.parent.mkdir(parents=True)
     repo = Repository(connect(str(dev_db)))
     init_db(repo.conn)
@@ -119,7 +119,7 @@ def test_self_test_never_touches_dev_db(tmp_path, monkeypatch):
 
 def test_self_test_check_cli_exit_code(tmp_path, monkeypatch):
     s = Settings(_env_file=None)
-    s.db_path = str(tmp_path / "data" / "bbv.db")
+    s.db_path = str(tmp_path / "data" / "bouncer.db")
     monkeypatch.setattr(cli, "load_settings", lambda: s)
     rc = cli.main(["setup", "--self-test"])
     assert rc in (0, 1)   # 0 all pass, 1 if a check failed (e.g. no Chromium)

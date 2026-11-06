@@ -1,5 +1,5 @@
 """A local, deliberately-vulnerable mock server for exercising the validators
-WITHOUT touching any real target. Started via `python -m bbv mockserver`.
+WITHOUT touching any real target. Started via `python -m bouncer mockserver`.
 
 Endpoints:
   /xss?q=...                  reflects q into a <script> block (reflected XSS)
@@ -97,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     server = ThreadingHTTPServer((host, port), _Handler)
-    print(f"bbv mock server on http://{host}:{port} (Ctrl-C to stop)")
+    print(f"bouncer mock server on http://{host}:{port} (Ctrl-C to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

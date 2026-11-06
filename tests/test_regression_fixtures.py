@@ -5,13 +5,13 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from bbv import models as m
-from bbv.db import connect, init_db
-from bbv.http_client import ScopedHttpClient
-from bbv.pipeline import validate_finding
-from bbv.rate_limiter import RateLimiter
-from bbv.repository import Repository
-from bbv.scope import Scope, ScopeError
+from bouncer import models as m
+from bouncer.db import connect, init_db
+from bouncer.http_client import ScopedHttpClient
+from bouncer.pipeline import validate_finding
+from bouncer.rate_limiter import RateLimiter
+from bouncer.repository import Repository
+from bouncer.scope import Scope, ScopeError
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -70,7 +70,7 @@ def test_out_of_scope_makes_zero_http_calls():
 
 def test_out_of_scope_ingest_creates_no_finding(tmp_path, monkeypatch, settings):
     """The CLI ingest path refuses an out-of-scope target before persisting."""
-    import bbv.cli as cli
+    import bouncer.cli as cli
     data = json.loads((FIX / "negative_out_of_scope.json").read_text())
     finding_path = tmp_path / "f.json"
     finding_path.write_text(json.dumps(data))

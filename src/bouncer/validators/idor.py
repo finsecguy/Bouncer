@@ -69,7 +69,7 @@ class IdorValidator(Validator):
         if not sess_a or not sess_b:
             return ValidationResult(
                 0.0, ValidationResult.INCONCLUSIVE,
-                "IDOR needs two configured sessions (BBV_IDOR_SESSION_A/B); "
+                "IDOR needs two configured sessions (BOUNCER_IDOR_SESSION_A/B); "
                 "none provided, cannot validate",
             )
 

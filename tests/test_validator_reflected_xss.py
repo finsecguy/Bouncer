@@ -1,9 +1,9 @@
 import pytest
 
-from bbv import models as m
-from bbv.models import ValidationResult
-from bbv.validators import get_validator
-from bbv.validators.base import ValidatorContext
+from bouncer import models as m
+from bouncer.models import ValidationResult
+from bouncer.validators import get_validator
+from bouncer.validators.base import ValidatorContext
 
 
 def _chromium_available() -> bool:
@@ -73,9 +73,9 @@ class _FakeRequest:
 def test_scope_route_aborts_out_of_scope_browser_request():
     """The Playwright interceptor must abort any browser request (subresource,
     XHR, redirect) that leaves scope — no bypass through the browser stack."""
-    from bbv.rate_limiter import RateLimiter
-    from bbv.scope import Scope
-    from bbv.validators.reflected_xss import _scope_route
+    from bouncer.rate_limiter import RateLimiter
+    from bouncer.scope import Scope
+    from bouncer.validators.reflected_xss import _scope_route
 
     sc = Scope.from_dict({"in_cidrs": ["127.0.0.1/32"], "in_domains": []})
     rl = RateLimiter(100, 100, 200, 200)

@@ -1,9 +1,9 @@
 import pytest
 
-from bbv import models as m
-from bbv.db import connect, init_db
-from bbv.repository import Repository
-from bbv.state_machine import IllegalTransition
+from bouncer import models as m
+from bouncer.db import connect, init_db
+from bouncer.repository import Repository
+from bouncer.state_machine import IllegalTransition
 
 
 @pytest.fixture

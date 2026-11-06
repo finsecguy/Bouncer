@@ -23,10 +23,16 @@ def build_rate_limiter(settings: Settings) -> RateLimiter:
 
 
 def validate_finding(
-    repo: Repository, finding: m.Finding, scope: Scope, settings: Settings
+    repo: Repository, finding: m.Finding, scope: Scope, settings: Settings,
+    rate_limiter: RateLimiter | None = None,
 ) -> m.Finding:
     """Run validation for a finding currently in state 'new'. Advances it to
-    validated->in_review, or rejected. Returns the refreshed finding."""
+    validated->in_review, or rejected. Returns the refreshed finding.
+
+    Pass a shared ``rate_limiter`` when validating many findings in one run
+    (batch / auto-chain) so per-host buckets and 429 backoff carry across
+    findings instead of resetting per finding. When omitted, a fresh limiter is
+    built (the single-`ingest` behavior)."""
     assert finding.id is not None
 
     # new -> validating
@@ -34,7 +40,7 @@ def validate_finding(
                     "validation started")
 
     validator = get_validator(finding.vuln_class)
-    rl = build_rate_limiter(settings)
+    rl = rate_limiter or build_rate_limiter(settings)
 
     if validator is None:
         repo.transition(finding.id, m.REJECTED, 0.0,

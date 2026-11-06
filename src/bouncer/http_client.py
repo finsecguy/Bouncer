@@ -1,4 +1,4 @@
-"""The single outbound HTTP choke point. Nothing in bbv may talk to a target
+"""The single outbound HTTP choke point. Nothing in bouncer may talk to a target
 except through ScopedHttpClient. It enforces scope on every hop (including
 redirects), rate-limits, and backs off on 429."""
 from __future__ import annotations
@@ -12,7 +12,7 @@ import httpx
 from .rate_limiter import RateLimiter
 from .scope import Scope, ScopeError
 
-log = logging.getLogger("bbv.http")
+log = logging.getLogger("bouncer.http")
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _MAX_REDIRECTS = 5
@@ -30,7 +30,7 @@ class ScopedHttpClient:
         scope: Scope,
         rate_limiter: RateLimiter,
         timeout: float = 15.0,
-        user_agent: str = "bbv-validator/0.1",
+        user_agent: str = "bouncer-validator/0.1",
         on_scope_block: Callable[[ScopeBlock], None] | None = None,
     ):
         self._scope = scope

@@ -1,8 +1,8 @@
-from bbv import models as m
-from bbv.db import connect, init_db
-from bbv.pipeline import validate_finding
-from bbv.repository import Repository
-from bbv.scope import Scope
+from bouncer import models as m
+from bouncer.db import connect, init_db
+from bouncer.pipeline import validate_finding
+from bouncer.repository import Repository
+from bouncer.scope import Scope
 
 
 def _repo(tmp_path):

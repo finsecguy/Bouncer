@@ -1,9 +1,18 @@
-# bbv: bug bounty validation engine
+# Bouncer: bug bounty validation engine
+
+![Bouncer](assets/logo.png)
 
 Evidence-gated validation for **authorized** bug bounty work. A candidate
 finding is *guilty until proven exploitable*: it reaches you only after a
 deterministic validator produces real request/response evidence. The pipeline
 hard-stops at `in_review`, and nothing in this repo ever submits to a platform.
+
+> **Human-in-the-loop boundary.** No mode of Bouncer, including `--auto-chain`, ever
+> auto-approves, auto-dismisses, auto-generates a report, or submits anything;
+> approval (`bouncer review`) and reporting (`bouncer report`) are always separate manual
+> steps. This boundary is enforced by an automated test
+> (`tests/test_design_boundary.py`), not documentation alone. See
+> [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md).
 
 ## Pipeline at a glance
 
@@ -48,26 +57,26 @@ Two optional pieces:
 - **Candidate generation** needs an LLM provider configured (see below). Without
   one you can replay a saved response offline with `--stub-response`.
 
-Run `bbv setup` to see what is configured and fix gaps interactively, or
-`bbv setup --check` for a non-interactive status report.
+Run `bouncer setup` to see what is configured and fix gaps interactively, or
+`bouncer setup --check` for a non-interactive status report.
 
 ## Configuration and setup
 
-`bbv setup` shows a status table (what is set, what is missing) and lets you fill
+`bouncer setup` shows a status table (what is set, what is missing) and lets you fill
 gaps. Secrets are entered hidden, written only to `.env` (mode 0600), never
 committed, never logged, and shown in status masked to the last four characters.
-`bbv setup --check` prints the same table non-interactively, so you can see
+`bouncer setup --check` prints the same table non-interactively, so you can see
 config problems up front instead of discovering them mid-run.
 
 ### Self-test
 
-`bbv setup --self-test` (also menu option 5) runs a pipeline smoke test: it
+`bouncer setup --self-test` (also menu option 5) runs a pipeline smoke test: it
 starts the mock server in-process, pushes the three sample findings through
 ingest against a **temporary** database, and reports pass/fail per check:
 
 - `reflected_xss` should reach `in_review` (reported as DEGRADED, not failed, if
   Chromium is not installed, since confirmed execution needs it).
-- `idor` reports "needs `BBV_IDOR_SESSION_A/B`" explicitly when those are unset,
+- `idor` reports "needs `BOUNCER_IDOR_SESSION_A/B`" explicitly when those are unset,
   rather than failing silently.
 - `sqli_boolean` reports whatever the mock actually produces.
 
@@ -78,13 +87,13 @@ if every check passed and 1 otherwise, so it is usable in CI.
 ### LLM provider
 
 Candidate generation (the one reasoning step) works with any of three providers,
-selected by `BBV_LLM_PROVIDER`:
+selected by `BOUNCER_LLM_PROVIDER`:
 
-| Provider | `BBV_LLM_PROVIDER` | Needs |
+| Provider | `BOUNCER_LLM_PROVIDER` | Needs |
 |----------|--------------------|-------|
-| Anthropic | `anthropic` (default) | `BBV_ANTHROPIC_API_KEY` |
-| OpenAI | `openai` | `BBV_OPENAI_API_KEY` (optional `BBV_OPENAI_BASE_URL`) |
-| Self-hosted (Ollama, vLLM, LM Studio, ...) | `self_hosted` | `BBV_OPENAI_BASE_URL` (e.g. `http://localhost:11434/v1`); key often optional |
+| Anthropic | `anthropic` (default) | `BOUNCER_ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `BOUNCER_OPENAI_API_KEY` (always uses the official endpoint; `BOUNCER_OPENAI_BASE_URL` is ignored so the key is never redirected) |
+| Self-hosted (Ollama, vLLM, LM Studio, ...) | `self_hosted` | `BOUNCER_OPENAI_BASE_URL` (e.g. `http://localhost:11434/v1`); key often optional |
 
 Self-hosted is just the OpenAI client pointed at an OpenAI-compatible endpoint,
 so no separate implementation is needed. Whatever the provider, the model's
@@ -102,24 +111,24 @@ Start the local, deliberately-vulnerable mock server (nothing touches a real
 target), then drive a finding through the gate in another shell.
 
 ```bash
-python -m bbv mockserver --port 8000
+python -m bouncer mockserver --port 8000
 ```
 
 ```bash
 # Ingest and validate sample findings.
-python -m bbv ingest samples/finding_xss.json  --scope samples/scope.example.json
-python -m bbv ingest samples/finding_sqli.json --scope samples/scope.example.json
+python -m bouncer ingest samples/finding_xss.json  --scope samples/scope.example.json
+python -m bouncer ingest samples/finding_sqli.json --scope samples/scope.example.json
 
 # IDOR needs two authenticated sessions; for the mock server:
-BBV_IDOR_SESSION_A='{"Cookie":"session=alice"}' \
-BBV_IDOR_SESSION_B='{"Cookie":"session=bob"}' \
-  python -m bbv ingest samples/finding_idor.json --scope samples/scope.example.json
+BOUNCER_IDOR_SESSION_A='{"Cookie":"session=alice"}' \
+BOUNCER_IDOR_SESSION_B='{"Cookie":"session=bob"}' \
+  python -m bouncer ingest samples/finding_idor.json --scope samples/scope.example.json
 
 # Browse, decide, and report.
-python -m bbv list
-python -m bbv show 1
-python -m bbv review 1 --approve --reason "verified"
-python -m bbv report 1 --platform intigriti
+python -m bouncer list
+python -m bouncer show 1
+python -m bouncer review 1 --approve --reason "verified"
+python -m bouncer report 1 --platform intigriti
 ```
 
 ## Commands
@@ -150,31 +159,31 @@ generate-candidates ever runs without a separate, explicit, human-invoked
 command, and no evidence is hidden or summarized away: if anything, batch mode
 shows *more* per invocation, never less.
 
-- **`bbv run <program>`** chains recon then generate-candidates and **stops**. It
+- **`bouncer run <program>`** chains recon then generate-candidates and **stops**. It
   prints the recon summary (in-scope and out-of-scope asset counts), the
   candidate files written, and flags prominently any candidate that carries a
   `known_pattern_note` so you see repeat patterns before opening files. It does
   not ingest, validate, review, or report, and it ends by telling you the next
   manual step. `run` accepts the same `--js-file` / `--base-url` /
   `--stub-response` options as generate-candidates.
-- **`bbv run <program> --auto-chain`** is an opt-in extension that also ingests
+- **`bouncer run <program> --auto-chain`** is an opt-in extension that also ingests
   each generated candidate (running the real validator, full per-finding
   evidence printed) before stopping. **It chains recon, candidate generation,
-  and ingestion. It never approves or submits findings; `bbv review` and
-  `bbv report` remain separate manual steps.** Because it fires live validation
+  and ingestion. It never approves or submits findings; `bouncer review` and
+  `bouncer report` remain separate manual steps.** Because it fires live validation
   requests, it asks for confirmation first unless you pass `--yes` (required for
   non-interactive use). `--max-candidates N` caps how many candidates it ingests
   in one run; set it for unattended or scheduled use. Auto-chained ingestion uses
   the exact same validator path as a manual `ingest`, so the evidence it records
   is identical to ingesting the same candidate by hand. The default `run` (no
   flag) is unchanged.
-- **`bbv ingest-batch <program> [--dir candidates/]`** ingests every candidate
+- **`bouncer ingest-batch <program> [--dir candidates/]`** ingests every candidate
   JSON in a directory, one at a time (sequential, so rate limiting and scope
   enforcement behave exactly as single ingests). For each file it prints the
   **same full evidence and transition trail** as a single `ingest`, then a
   summary table at the end (id, vuln_class, state, confidence, target). The
   table is in addition to the full output, never a replacement for it.
-- **`bbv queue [--dir candidates/]`** is read-only and changes nothing. It shows,
+- **`bouncer queue [--dir candidates/]`** is read-only and changes nothing. It shows,
   across all programs: findings in `in_review` awaiting your decision, candidate
   files not yet ingested (an exact `program + vuln_class + target_url` diff
   against the findings table), and approved findings with no report file yet.
@@ -219,16 +228,16 @@ All deterministic. None of them "ask an LLM if it looks exploitable."
 ```bash
 # 1. Passive recon. Wrapped tools only ever receive in-scope hosts; every
 #    discovered asset is scope-checked before it is stored.
-python -m bbv recon demo --scope samples/scope.example.json
+python -m bouncer recon demo --scope samples/scope.example.json
 
-# 2. Candidate generation. Needs BBV_ANTHROPIC_API_KEY, or replay a saved
+# 2. Candidate generation. Needs BOUNCER_ANTHROPIC_API_KEY, or replay a saved
 #    Claude response offline against a sample JS file:
-python -m bbv generate-candidates demo --scope samples/scope.example.json \
+python -m bouncer generate-candidates demo --scope samples/scope.example.json \
   --js-file samples/sample_app.js --base-url http://127.0.0.1:8000/ \
   --stub-response samples/claude_response.example.json
 
 # 3. Review the files in candidates/ yourself, then ingest the ones you choose.
-python -m bbv ingest candidates/demo_001_reflected_xss.json --scope samples/scope.example.json
+python -m bouncer ingest candidates/demo_001_reflected_xss.json --scope samples/scope.example.json
 ```
 
 Candidate output is unvalidated and not trustworthy on its own. Candidate
@@ -241,16 +250,16 @@ auto-ingests. Review every candidate before `ingest`.
 
 ## False-positive signatures (advisory triage)
 
-When a finding is rejected, bbv derives a deterministic fingerprint of *why*,
+When a finding is rejected, Bouncer derives a deterministic fingerprint of *why*,
 from the same structured evidence the validator already wrote, and tracks how
 often that exact fingerprint recurs. The goal is faster triage over time, not
 noise prevention: nothing fuzzy reaches you in this architecture, because every
 rejection already carries a concrete deterministic reason.
 
 ```bash
-python -m bbv signatures list [--program demo] [--vuln-class sqli_boolean]
-python -m bbv signatures show <id>     # feature_key, example evidence, breakdown
-python -m bbv signatures backfill      # derive signatures from past rejections
+python -m bouncer signatures list [--program demo] [--vuln-class sqli_boolean]
+python -m bouncer signatures show <id>     # feature_key, example evidence, breakdown
+python -m bouncer signatures backfill      # derive signatures from past rejections
 ```
 
 This layer is **advisory only**. It never auto-rejects a candidate without
@@ -293,8 +302,8 @@ How it works:
 Once you have approved a finding, turn it into a submittable write-up:
 
 ```bash
-python -m bbv report <finding_id> --platform intigriti            # writes a file
-python -m bbv report <finding_id> --platform intigriti --dry-run  # prints instead
+python -m bouncer report <finding_id> --platform intigriti            # writes a file
+python -m bouncer report <finding_id> --platform intigriti --dry-run  # prints instead
 ```
 
 Reports are written to `reports/<program>/<finding_id>_<vuln_class>.md`. The
@@ -349,7 +358,7 @@ they cannot literally go through `ScopedHttpClient`. The scope guarantee is kept
 two ways instead: they are only ever handed pre-scope-checked in-scope targets,
 and all of their output is scope-checked before it is persisted (out-of-scope
 assets are recorded and flagged, never silently probed or dropped). Each tool is
-also passed its native rate-limit flag from config. The one target fetch bbv
+also passed its native rate-limit flag from config. The one target fetch Bouncer
 does itself, pulling JS for candidate generation, does go through
 `ScopedHttpClient`.
 
@@ -362,7 +371,7 @@ logged.
 ## Layout
 
 ```
-src/bbv/
+src/bouncer/
   scope.py http_client.py rate_limiter.py   # safety layer (single choke point)
   state_machine.py repository.py db.py models.py
   validators/                               # one module per vuln_class, registered
@@ -380,12 +389,12 @@ samples/    # scope, one finding per validator, sample JS + replay Claude respon
 
 ## Config
 
-Configuration comes from `.env` (see `.env.example`) with the prefix `BBV_`:
+Configuration comes from `.env` (see `.env.example`) with the prefix `BOUNCER_`:
 `DB_PATH`, rate limits, HTTP timeout and user agent, IDOR session headers, recon
 tool paths and flags, `CANDIDATES_DIR`, `REPORTS_DIR`, and the LLM provider
 settings (`LLM_PROVIDER`, `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`,
 `OPENAI_API_KEY`/`OPENAI_MODEL`/`OPENAI_BASE_URL`). Secrets live only in `.env`,
-which is gitignored. The easiest way to set these is `bbv setup`.
+which is gitignored. The easiest way to set these is `bouncer setup`.
 
 ## Tests
 

@@ -1,4 +1,4 @@
-"""`bbv setup`: surface what is configured, what is missing, and let the user
+"""`bouncer setup`: surface what is configured, what is missing, and let the user
 fix gaps interactively. Pure UX/config tooling.
 
 It never changes validation, scope, or signature logic; never makes a safety
@@ -66,13 +66,13 @@ def _llm_provider_status(settings: Settings) -> StatusItem:
     p = (settings.llm_provider or "anthropic").strip().lower()
     if p == "anthropic":
         ok = bool(settings.anthropic_api_key)
-        detail = f"anthropic (BBV_ANTHROPIC_API_KEY {'set' if ok else 'not set'})"
+        detail = f"anthropic (BOUNCER_ANTHROPIC_API_KEY {'set' if ok else 'not set'})"
     elif p == "openai":
         ok = bool(settings.openai_api_key)
-        detail = f"openai (BBV_OPENAI_API_KEY {'set' if ok else 'not set'})"
+        detail = f"openai (BOUNCER_OPENAI_API_KEY {'set' if ok else 'not set'})"
     elif p == "self_hosted":
         ok = bool(settings.openai_base_url)
-        detail = (f"self_hosted (BBV_OPENAI_BASE_URL "
+        detail = (f"self_hosted (BOUNCER_OPENAI_BASE_URL "
                   f"{'set' if ok else 'not set'}; key optional)")
     else:
         ok = False
@@ -165,11 +165,23 @@ def set_env_var(key: str, value: str, env_path: str = ENV_PATH) -> None:
             out.append(line)
     if not found:
         out.append(f"{key}={value}")
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    content = "\n".join(out) + "\n"
+    # Atomic write with 0600 from creation: create a temp file in the same dir
+    # with mode 0600, write, then os.replace over .env. This avoids a brief
+    # world-readable window and avoids truncating .env on a mid-write crash.
+    parent = path.parent if str(path.parent) else Path(".")
+    fd, tmp = tempfile.mkstemp(dir=str(parent), prefix=".env.", suffix=".tmp")
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass  # non-POSIX filesystems; best effort
+        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 _SCOPE_TEMPLATE = {
@@ -205,28 +217,40 @@ def _choose_provider(env_path, inp, secret, out) -> None:
         out("Unrecognized provider; unchanged.")
         return
 
-    set_env_var("BBV_LLM_PROVIDER", provider, env_path)
-    out(f"Set BBV_LLM_PROVIDER={provider}.")
+    set_env_var("BOUNCER_LLM_PROVIDER", provider, env_path)
+    out(f"Set BOUNCER_LLM_PROVIDER={provider}.")
 
     if provider == "anthropic":
         val = secret("Anthropic API key (input hidden, blank to keep current): ").strip()
         if val:
-            set_env_var("BBV_ANTHROPIC_API_KEY", val, env_path)
+            set_env_var("BOUNCER_ANTHROPIC_API_KEY", val, env_path)
             out("Saved Anthropic API key to .env (not shown).")
     elif provider == "openai":
+        # Clear any base_url left over from a previous self_hosted config so the
+        # real OpenAI key can never be sent to some other host; provider=openai
+        # always uses the official endpoint.
+        set_env_var("BOUNCER_OPENAI_BASE_URL", "", env_path)
         val = secret("OpenAI API key (input hidden, blank to keep current): ").strip()
         if val:
-            set_env_var("BBV_OPENAI_API_KEY", val, env_path)
+            set_env_var("BOUNCER_OPENAI_API_KEY", val, env_path)
             out("Saved OpenAI API key to .env (not shown).")
     else:  # self_hosted
         base = inp("OpenAI-compatible base URL (e.g. http://localhost:11434/v1): ").strip()
         if base:
-            set_env_var("BBV_OPENAI_BASE_URL", base, env_path)
-            out(f"Set BBV_OPENAI_BASE_URL={base}.")
-        val = secret("API key if the server requires one (input hidden, blank to skip): ").strip()
-        if val:
-            set_env_var("BBV_OPENAI_API_KEY", val, env_path)
-            out("Saved API key to .env (not shown).")
+            set_env_var("BOUNCER_OPENAI_BASE_URL", base, env_path)
+            out(f"Set BOUNCER_OPENAI_BASE_URL={base}.")
+        model = inp("Model name your endpoint serves (e.g. llama3; blank to keep "
+                    "current): ").strip()
+        if model:
+            set_env_var("BOUNCER_OPENAI_MODEL", model, env_path)
+            out(f"Set BOUNCER_OPENAI_MODEL={model}.")
+        # The key field is shared with provider=openai. Blank CLEARS it, so a
+        # real OpenAI key is never silently sent to a self-hosted/remote host.
+        val = secret("API key if the server requires one (input hidden, blank to "
+                     "CLEAR any stored key): ").strip()
+        set_env_var("BOUNCER_OPENAI_API_KEY", val, env_path)
+        out("Saved API key to .env (not shown)." if val
+            else "Cleared stored OpenAI API key for self_hosted.")
 
 
 def _set_idor_session(which: str, raw: str, env_path: str) -> str:
@@ -241,7 +265,13 @@ def _set_idor_session(which: str, raw: str, env_path: str) -> str:
         return "Not valid JSON; unchanged. Expected e.g. {\"Cookie\": \"session=...\"}"
     if not isinstance(parsed, dict):
         return "Must be a JSON object of headers; unchanged."
-    set_env_var(f"BBV_IDOR_SESSION_{which}", json.dumps(parsed), env_path)
+    # Must match the Settings contract (dict[str, str]) exactly, or a later
+    # load_settings() would raise and brick every command, including setup
+    # itself. Reject non-string keys/values here instead of writing them.
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+        return ("Every header name and value must be a string, e.g. "
+                '{"Cookie": "session=..."}; unchanged.')
+    set_env_var(f"BOUNCER_IDOR_SESSION_{which}", json.dumps(parsed), env_path)
     return f"Saved IDOR session {which} to .env (not shown)."
 
 
@@ -261,11 +291,11 @@ def _ingest_sample(repo, scope, settings, data):
 def run_self_test(loader: Callable[[], Settings] = load_settings,
                   out: Callable[[str], None] = print) -> bool:
     """Smoke-test the pipeline end to end against an in-process mock server,
-    using a TEMPORARY database. data/bbv.db (or whatever db_path points at) is
+    using a TEMPORARY database. data/bouncer.db (or whatever db_path points at) is
     never opened or written. Returns True if no check FAILED.
 
     Checks: reflected_xss should reach in_review (DEGRADED if Chromium is
-    missing); idor reports 'needs BBV_IDOR_SESSION_A/B' when those are unset
+    missing); idor reports 'needs BOUNCER_IDOR_SESSION_A/B' when those are unset
     instead of failing silently; sqli_boolean reports what the mock produces.
     """
     from . import models as m
@@ -278,7 +308,7 @@ def run_self_test(loader: Callable[[], Settings] = load_settings,
     samples = _samples_dir()
     failures = 0
 
-    out("=== bbv self-test ===")
+    out("=== bouncer self-test ===")
     out("Using a temporary database; the real database is not touched.")
 
     with tempfile.TemporaryDirectory() as td:
@@ -318,7 +348,7 @@ def run_self_test(loader: Callable[[], Settings] = load_settings,
             has_sessions = bool(settings.idor_session_a and settings.idor_session_b)
             f = _ingest_sample(repo, scope, settings, load_sample("finding_idor.json"))
             if not has_sessions:
-                out("  [NEEDS CONFIG] idor -> BBV_IDOR_SESSION_A/B not set; "
+                out("  [NEEDS CONFIG] idor -> BOUNCER_IDOR_SESSION_A/B not set; "
                     "idor validation cannot run (this is expected, not a failure)")
             elif f.state == m.IN_REVIEW:
                 out(f"  [PASS] idor  -> {f.state}")

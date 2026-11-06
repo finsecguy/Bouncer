@@ -1,7 +1,7 @@
 import pytest
 
-from bbv import models as m
-from bbv import state_machine as sm
+from bouncer import models as m
+from bouncer import state_machine as sm
 
 
 def test_legal_path():

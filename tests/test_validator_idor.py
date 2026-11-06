@@ -1,10 +1,10 @@
 import pytest
 
-from bbv import models as m
-from bbv.config import Settings
-from bbv.models import ValidationResult
-from bbv.validators import get_validator
-from bbv.validators.base import ValidatorContext
+from bouncer import models as m
+from bouncer.config import Settings
+from bouncer.models import ValidationResult
+from bouncer.validators import get_validator
+from bouncer.validators.base import ValidatorContext
 
 
 def _settings_with_sessions():

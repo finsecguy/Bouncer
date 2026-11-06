@@ -1,9 +1,9 @@
 import pytest
 
-from bbv import models as m
-from bbv import signatures as sig
-from bbv.db import connect, init_db
-from bbv.repository import Repository
+from bouncer import models as m
+from bouncer import signatures as sig
+from bouncer.db import connect, init_db
+from bouncer.repository import Repository
 
 
 # ---------- pure extractor ----------
@@ -138,7 +138,7 @@ def _reject_sqli(repo, url, program="demo"):
 
 
 def test_precheck_annotates_only_matching_endpoint(repo):
-    from bbv.candidates import annotate_known_patterns
+    from bouncer.candidates import annotate_known_patterns
 
     # Rejected sqli on /item (program-scoped, endpoint-derivable signature).
     _reject_sqli(repo, "http://127.0.0.1:8000/item?id=1", program="demo")
@@ -160,7 +160,7 @@ def test_precheck_annotates_only_matching_endpoint(repo):
 
 
 def test_precheck_does_not_match_global_xss_pattern(repo):
-    from bbv.candidates import annotate_known_patterns
+    from bouncer.candidates import annotate_known_patterns
 
     _reject_xss(repo, context="text")  # global signature, not endpoint-derivable
     cands = [{"program": "demo", "vuln_class": "reflected_xss",
