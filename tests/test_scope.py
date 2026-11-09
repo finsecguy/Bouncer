@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from bouncer.scope import Scope, ScopeError
@@ -68,3 +71,15 @@ def test_ip_out_of_scope_exclusion_wins(scope):
 
 def test_ip_not_in_any_cidr(scope):
     assert not scope.is_allowed("http://8.8.8.8/x")
+
+
+def test_committed_demo_scope_matches_sample():
+    root = Path(__file__).resolve().parents[1]
+    demo = json.loads((root / "scopes" / "demo.json").read_text(encoding="utf-8"))
+    sample = json.loads((root / "samples" / "scope.example.json").read_text(encoding="utf-8"))
+    assert demo == sample
+    scope = Scope.from_dict(demo)
+    assert scope.is_allowed("http://127.0.0.1:8000/xss")
+    assert scope.is_allowed("https://app.example.com/x")
+    assert not scope.is_allowed("https://admin.example.com/")
+    assert not scope.is_allowed("https://no.example.com/")
