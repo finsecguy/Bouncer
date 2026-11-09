@@ -1,0 +1,8 @@
+{
+  "in_domains": [],
+  "in_cidrs": ["127.0.0.1/32"],
+  "out_domains": [],
+  "out_cidrs": [],
+  "wildcard_matches_apex": false,
+  "allowed_schemes": ["http", "https"]
+}

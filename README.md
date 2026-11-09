@@ -151,6 +151,8 @@ python -m bouncer report 1 --platform intigriti
 When `--scope` is omitted, commands default to `scopes/<program>.json` and
 **always print which scope file was used**. If neither an explicit `--scope` nor
 the default file exists, the command refuses rather than guessing.
+`scopes/demo.json` is committed for the `demo` program so demo commands can omit
+`--scope`. It allows only `127.0.0.1`, the local mock, and no domain or other address.
 
 ## Convenience commands
 
