@@ -3,7 +3,6 @@ masked in status, never printed in full."""
 import os
 import stat
 
-import pytest
 
 import bouncer.cli as cli
 from bouncer import setup as st

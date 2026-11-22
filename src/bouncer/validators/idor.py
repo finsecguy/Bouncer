@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Any
 
 from ..models import Evidence, Finding, ValidationResult
 from .base import Validator, ValidatorContext

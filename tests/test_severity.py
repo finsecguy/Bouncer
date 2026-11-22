@@ -1,5 +1,5 @@
 from bouncer import models as m
-from bouncer.severity import assess, compute_base_score, vector_string
+from bouncer.severity import assess, compute_base_score
 
 
 def _ev(kind, data):

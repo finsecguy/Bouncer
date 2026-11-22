@@ -1,4 +1,3 @@
-import pytest
 
 from bouncer import models as m
 from bouncer.config import Settings
