@@ -1,7 +1,6 @@
 """Regression tests for the fixes to the ultrareview findings."""
 import json
 
-import pytest
 
 import bouncer.cli as cli
 from bouncer import models as m

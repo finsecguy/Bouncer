@@ -1,7 +1,5 @@
-import subprocess
 import types
 
-import pytest
 
 from bouncer import models as m
 from bouncer.config import Settings

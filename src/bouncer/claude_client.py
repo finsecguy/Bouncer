@@ -109,7 +109,7 @@ class OpenAIProvider:
             try:
                 resp = httpx.post(f"{self._base_url}/chat/completions", json=body,
                                   headers=headers, timeout=self._timeout)
-            except (httpx.TimeoutException, httpx.TransportError) as e:
+            except (httpx.TimeoutException, httpx.TransportError):
                 if attempt >= self._max_retries:
                     raise
                 time.sleep(2 ** attempt)

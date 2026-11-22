@@ -7,7 +7,7 @@ they never introduce new technical claims. No LLM is involved in this path.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .. import models as m
@@ -112,7 +112,6 @@ def _xss(finding, evidence):
 def _idor(finding, evidence):
     by = _by_kind(evidence)
     d = by.get("idor_match", {})
-    req = finding.request or {}
     title = f"Insecure Direct Object Reference on {_endpoint(d, finding)}"
     summary = (
         f"The endpoint {_endpoint(d, finding)} exposes objects by a user-controlled "

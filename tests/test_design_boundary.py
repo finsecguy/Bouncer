@@ -9,7 +9,6 @@ import ast
 import json
 from pathlib import Path
 
-import pytest
 
 import bouncer.cli as cli
 from bouncer import models as m

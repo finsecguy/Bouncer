@@ -3,9 +3,7 @@ must add zero autonomy: run stops after generate-candidates, batch is identical
 to sequential single ingests, queue changes nothing."""
 import json
 from pathlib import Path
-from urllib.parse import urlsplit
 
-import pytest
 
 import bouncer.cli as cli
 from bouncer import models as m

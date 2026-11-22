@@ -54,7 +54,6 @@ def extract(vuln_class: str, evidence: list[m.Evidence]) -> Signature | None:
 
 def _extract_xss(evidence: list[m.Evidence]) -> Signature | None:
     by = _evidence_by_kind(evidence)
-    refl = by.get("canary_reflection", {})
     # The first reflection evidence carries {reflected: bool}; a later one carries
     # {context, raw_special_chars}. Merge what we have.
     reflected = None
