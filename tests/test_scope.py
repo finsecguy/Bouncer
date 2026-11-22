@@ -68,3 +68,149 @@ def test_ip_out_of_scope_exclusion_wins(scope):
 
 def test_ip_not_in_any_cidr(scope):
     assert not scope.is_allowed("http://8.8.8.8/x")
+
+
+def test_wildcard_exclusion_covers_apex_when_flag_is_off():
+    s = Scope.from_dict({
+        "in_domains": ["example.com", "*.example.com", "example.org"],
+        "out_domains": ["*.example.com"],
+        "wildcard_matches_apex": False,
+    })
+    assert not s.is_allowed("https://a.example.com/x")
+    assert not s.is_allowed("https://example.com/x")
+    assert s.is_allowed("https://example.org/x")
+
+
+def test_wildcard_exclusion_apex_does_not_swallow_other_names():
+    s = Scope.from_dict({
+        "in_domains": ["example.com", "*.example.com"],
+        "out_domains": ["*.api.example.com"],
+        "wildcard_matches_apex": False,
+    })
+    assert s.is_allowed("https://example.com/")
+    assert s.is_allowed("https://www.example.com/")
+    assert not s.is_allowed("https://api.example.com/")
+    assert not s.is_allowed("https://v1.api.example.com/")
+
+
+def test_hostname_resolving_into_out_cidr_is_refused():
+    calls = []
+
+    def resolver(host):
+        calls.append(host)
+        return ["10.1.2.3"]
+
+    s = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "in_cidrs": ["127.0.0.1/32"],
+        "out_cidrs": ["10.1.2.3/32"],
+    })
+    s.resolver = resolver
+    with pytest.raises(ScopeError, match="out of scope"):
+        s.check("http://app.test/x")
+    assert calls == ["app.test"]
+
+
+def test_any_resolved_address_in_out_cidr_refuses_the_name():
+    s = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "out_cidrs": ["10.1.2.3/32"],
+    })
+    s.resolver = lambda host: ["127.0.0.1", "10.1.2.3"]
+    assert not s.is_allowed("http://app.test/x")
+
+
+def test_resolved_pin_is_the_first_clean_address():
+    s = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "out_cidrs": ["10.0.0.0/8"],
+    })
+    s.resolver = lambda host: ["127.0.0.2", "127.0.0.2", "127.0.0.3"]
+    decision = s.check("http://app.test/x")
+    assert decision.pin == "127.0.0.2"
+    assert decision.host == "app.test"
+
+
+def test_domain_allow_does_not_require_address_in_in_cidrs():
+    s = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "in_cidrs": ["127.0.0.1/32"],
+        "out_cidrs": ["10.0.0.0/8"],
+    })
+    s.resolver = lambda host: ["127.0.0.2"]
+    assert s.is_allowed("http://app.test/x")
+
+
+def test_unresolved_hostname_is_refused():
+    s = Scope.from_dict({"in_domains": ["app.test"]})
+    s.resolver = lambda host: []
+    with pytest.raises(ScopeError, match="did not resolve"):
+        s.check("http://app.test/")
+
+
+def test_resolver_oserror_is_scope_error():
+    def resolver(host):
+        raise OSError("dns down")
+
+    s = Scope.from_dict({"in_domains": ["app.test"]})
+    s.resolver = resolver
+    with pytest.raises(ScopeError, match="could not resolve"):
+        s.check("http://app.test/")
+
+
+def test_non_ip_resolver_result_is_refused():
+    s = Scope.from_dict({"in_domains": ["app.test"]})
+    s.resolver = lambda host: ["not-an-ip"]
+    with pytest.raises(ScopeError, match="non-ip"):
+        s.check("http://app.test/")
+
+
+def test_literal_ip_does_not_resolve():
+    calls = []
+    s = Scope.from_dict({"in_cidrs": ["127.0.0.1/32"], "out_cidrs": ["10.0.0.0/8"]})
+    s.resolver = lambda host: calls.append(host) or ["10.1.1.1"]
+    assert s.check("http://127.0.0.1/x").pin == "127.0.0.1"
+    assert calls == []
+
+
+def test_out_of_scope_name_is_not_resolved():
+    calls = []
+    s = Scope.from_dict({"in_domains": ["app.test"], "out_domains": ["secret.app.test"]})
+    s.resolver = lambda host: calls.append(host) or ["127.0.0.1"]
+    assert not s.is_allowed("http://secret.app.test/")
+    assert not s.is_allowed("http://other.test/")
+    assert calls == []
+
+
+def test_ipv4_mapped_address_matches_out_cidr():
+    s = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "in_cidrs": ["10.0.0.0/8"],
+        "out_cidrs": ["10.1.2.3/32"],
+    })
+    s.resolver = lambda host: ["::ffff:10.1.2.3"]
+    assert not s.is_allowed("http://app.test/")
+    assert not s.is_allowed("http://[::ffff:10.1.2.3]/")
+
+
+def test_ipv4_mapped_literal_can_match_in_cidr():
+    s = Scope.from_dict({"in_cidrs": ["127.0.0.1/32"]})
+    assert s.is_allowed("http://[::ffff:127.0.0.1]/")
+
+
+def test_resolve_host_reads_stubbed_getaddrinfo(monkeypatch):
+    import socket
+
+    from bouncer.scope import _addresses_from_getaddrinfo
+
+    def fake(host, port, *args, **kwargs):
+        assert host == "app.test"
+        assert port is None
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+    assert _addresses_from_getaddrinfo("app.test") == ["127.0.0.1", "::1"]

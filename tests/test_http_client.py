@@ -144,6 +144,157 @@ def test_redirect_downgrades_unsafe_methods(status, method, expected):
     assert seen[1][2] == b""
 
 
+def test_connection_is_pinned_to_the_checked_address():
+    scope = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "out_cidrs": ["10.1.2.3/32"],
+    })
+    calls = []
+
+    def resolver(host):
+        calls.append(host)
+        return ["127.0.0.1"]
+
+    scope.resolver = resolver
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, text="ok")
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        resp = client.get("http://app.test/path")
+    assert resp.status_code == 200
+    assert calls == ["app.test"]
+    assert seen[0].url.host == "127.0.0.1"
+    assert seen[0].headers["host"] == "app.test"
+    assert seen[0].extensions["sni_hostname"] == "app.test"
+
+
+def test_second_resolver_answer_is_not_used_for_the_socket():
+    scope = Scope.from_dict({
+        "in_domains": ["app.test"],
+        "out_cidrs": ["10.9.9.9/32"],
+    })
+    answers = [["127.0.0.1"], ["10.9.9.9"]]
+
+    def resolver(host):
+        return answers.pop(0)
+
+    scope.resolver = resolver
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        return httpx.Response(200, text="ok")
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        resp = client.get("http://app.test/x")
+    assert resp.status_code == 200
+    assert seen == ["127.0.0.1"]
+    assert answers == [["10.9.9.9"]]
+
+
+def test_relative_redirect_is_rechecked_on_the_original_name():
+    scope = Scope.from_dict({"in_domains": ["app.test"], "out_cidrs": ["10.0.0.0/8"]})
+    calls = []
+
+    def resolver(host):
+        calls.append(host)
+        return ["127.0.0.1"]
+
+    scope.resolver = resolver
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.host, request.url.path, request.headers["host"]))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"Location": "/next"})
+        return httpx.Response(200, text="ok")
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        resp = client.get("http://app.test/start")
+    assert resp.status_code == 200
+    assert calls == ["app.test", "app.test"]
+    assert seen == [
+        ("127.0.0.1", "/start", "app.test"),
+        ("127.0.0.1", "/next", "app.test"),
+    ]
+
+
+def test_redirect_into_excluded_cidr_is_not_sent():
+    scope = Scope.from_dict({
+        "in_domains": ["app.test", "bad.test"],
+        "out_cidrs": ["10.1.2.3/32"],
+    })
+
+    def resolver(host):
+        return {"app.test": ["127.0.0.1"], "bad.test": ["10.1.2.3"]}[host]
+
+    scope.resolver = resolver
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        return httpx.Response(302, headers={"Location": "http://bad.test/secret"})
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ScopeError, match="out of scope"):
+            client.get("http://app.test/start")
+    assert seen == ["127.0.0.1"]
+
+
+def test_ipv6_pin_keeps_the_original_host_header():
+    scope = Scope.from_dict({"in_domains": ["app.test"]})
+    scope.resolver = lambda host: ["::1"]
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, text="ok")
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        resp = client.get("http://app.test:8080/x")
+    assert resp.status_code == 200
+    assert seen[0].url.host == "::1"
+    assert seen[0].url.port == 8080
+    assert str(seen[0].url).startswith("http://[::1]:8080/")
+    assert seen[0].headers["host"] == "app.test:8080"
+    assert seen[0].extensions["sni_hostname"] == "app.test"
+
+
+def test_trailing_dot_and_idna_pin_the_checked_address():
+    scope = Scope.from_dict({
+        "in_domains": ["app.test", "xn--bcher-kva.test"],
+    })
+    calls = []
+
+    def resolver(host):
+        calls.append(host)
+        return ["127.0.0.1"]
+
+    scope.resolver = resolver
+    seen = []
+
+    def handler(request):
+        seen.append((
+            request.url.host,
+            request.headers["host"],
+            request.extensions.get("sni_hostname"),
+        ))
+        return httpx.Response(200, text="ok")
+
+    with ScopedHttpClient(scope, _limiter(), transport=httpx.MockTransport(handler)) as client:
+        client.get("http://App.Test./x")
+        client.get("http://bücher.test/y")
+    assert calls == ["app.test", "xn--bcher-kva.test"]
+    assert seen[0][0] == "127.0.0.1"
+    assert seen[0][1] != "127.0.0.1"
+    assert seen[0][2] == "app.test"
+    assert seen[1][0] == "127.0.0.1"
+    assert seen[1][2] == "xn--bcher-kva.test"
+
+
 def test_redirect_to_out_of_scope_is_blocked_before_send():
     seen = []
 

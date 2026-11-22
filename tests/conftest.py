@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
+import socket
+
 import pytest
 
 from bouncer.config import Settings
@@ -7,6 +10,27 @@ from bouncer.http_client import ScopedHttpClient
 from bouncer.mockserver import start_background
 from bouncer.rate_limiter import RateLimiter
 from bouncer.scope import Scope
+
+_REAL_GETADDRINFO = socket.getaddrinfo
+
+
+def _guarded_getaddrinfo(host, port, *args, **kwargs):
+    """Allow literal addresses only. A hostname must never reach the network."""
+    if host is None or host == "" or host == b"":
+        return _REAL_GETADDRINFO(host, port, *args, **kwargs)
+    text = host.decode() if isinstance(host, bytes) else host
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        raise AssertionError(f"refusing to resolve {text!r}") from None
+    return _REAL_GETADDRINFO(host, port, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _no_external_dns(monkeypatch):
+    """Scope resolution and socket lookup stay on stubs and literal IPs."""
+    monkeypatch.setattr(socket, "getaddrinfo", _guarded_getaddrinfo)
+    monkeypatch.setattr("bouncer.scope.resolve_host", lambda host: ["127.0.0.1"])
 
 
 @pytest.fixture(scope="session")
